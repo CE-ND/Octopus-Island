@@ -156,7 +156,7 @@ QQ 收信、邮件日程和飞书个人日历已进行真实账号测试。其�
 <details>
 <summary id="从源码构建与参与开发"><b>从源码构建与参与开发</b></summary>
 
-需要 Rust stable、MSVC C++ 构建工具和 Windows SDK。
+需要 Rust stable、MSVC C++ 构建工具和 Windows SDK。完整的环境安装、下载地址和常见问题见 [开发环境与启动指南](docs/DEVELOPMENT.md)。
 
 ```powershell
 rustup default stable-x86_64-pc-windows-msvc
@@ -173,7 +173,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1
 
 测试按单线程运行，以隔离使用进程环境变量的数据目录测试。低内存设备可设置 `$env:CARGO_BUILD_JOBS = "1"`。打包需要 NSIS 3，可通过 `-NsisCompiler` 指定 `makensis.exe`。
 
-项目结构、界面预览与贡献方式见 [开发指南](CONTRIBUTING.md)。
+项目结构、测试和贡献方式见 [参与开发](CONTRIBUTING.md)。
 
 </details>
 

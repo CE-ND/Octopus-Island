@@ -4,6 +4,8 @@
 
 ## 本地开发
 
+完整的环境安装、下载地址、工具链验证和常见问题见 [开发环境与启动指南](docs/DEVELOPMENT.md)。
+
 安装 Rust stable、Visual Studio C++ 构建工具和 Windows SDK，克隆仓库后运行：
 
 ```powershell
