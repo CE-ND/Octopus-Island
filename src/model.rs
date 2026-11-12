@@ -169,6 +169,50 @@ impl Dock {
     pub fn is_side(self) -> bool { self != Self::Top }
 }
 
+/// 动画刷新档位：标准保持原有节奏，省电降低各场景帧率以换取更低占用。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnimationRate {
+    PowerSaver,
+    #[default]
+    Standard,
+}
+
+impl AnimationRate {
+    pub const ALL: [AnimationRate; 2] = [Self::PowerSaver, Self::Standard];
+
+    pub fn key(self) -> &'static str {
+        match self { Self::PowerSaver => "power_saver", Self::Standard => "standard" }
+    }
+    pub fn parse(value: &str) -> Self {
+        match value { "power_saver" | "saver" => Self::PowerSaver, _ => Self::Standard }
+    }
+    pub fn label(self) -> &'static str {
+        match self { Self::PowerSaver => "省电 30", Self::Standard => "标准 60" }
+    }
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::PowerSaver => "交互动画 30 帧、氛围动画 20 帧、桌宠 15 帧；更省电，动画速度和轨迹不变。",
+            Self::Standard => "交互动画 60 帧、氛围动画 30 帧、桌宠 20 帧；画面更顺滑，默认档。",
+        }
+    }
+    /// 交互动画（展开、收起、翻页、拖拽等）的刷新间隔，秒。
+    pub fn transition_interval(self) -> f64 {
+        match self { Self::PowerSaver => 1.0 / 30.0, Self::Standard => 1.0 / 60.0 }
+    }
+    /// 氛围动画（流体皮肤、番茄钟、音乐、会议提醒）的刷新间隔，秒。
+    pub fn ambient_interval(self) -> f64 {
+        match self { Self::PowerSaver => 1.0 / 20.0, Self::Standard => 1.0 / 30.0 }
+    }
+    /// 桌宠刷新间隔，秒；睡眠时两档都保持 10 帧。
+    pub fn pet_interval(self, sleeping: bool) -> f64 {
+        match (self, sleeping) {
+            (Self::PowerSaver, false) => 1.0 / 15.0,
+            (Self::Standard, false) => 0.05,
+            (_, true) => 0.1,
+        }
+    }
+}
+
 /// 岛体大小（百分比）的范围与步进。
 pub const ISLAND_SIZE_MIN: u32 = 80;
 pub const ISLAND_SIZE_MAX: u32 = 140;
@@ -192,6 +236,8 @@ pub struct Settings {
     pub island_offset: i32,
     /// 停靠边缘；左右停靠时 `island_offset` 表示上下位置。
     pub dock: Dock,
+    /// 动画刷新档位：省电 30 / 标准 60。
+    pub animation_rate: AnimationRate,
     pub settings_theme: crate::settings_theme::SettingsTheme,
     pub pet: bool,
     pub minimal: bool,
@@ -242,7 +288,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 8], page_order: [0,1,2,3,4,5,6,7], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true }
+        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, animation_rate: AnimationRate::Standard, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 8], page_order: [0,1,2,3,4,5,6,7], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true }
     }
 }
 
@@ -283,6 +329,7 @@ impl Settings {
                 }
                 "island_shape" => s.island_shape = IslandShape::parse(&v),
                 "dock" => s.dock = Dock::parse(&v),
+                "animation_rate" => s.animation_rate = AnimationRate::parse(&v),
                 "glass_blur" => s.glass_blur = v != "0",
                 "island_size" => s.island_size = island_size_value(v.parse::<u32>().unwrap_or(100)),
                 "island_offset" => s.island_offset = v.parse::<i32>().unwrap_or(0).clamp(-ISLAND_OFFSET_MAX, ISLAND_OFFSET_MAX),
@@ -353,6 +400,7 @@ impl Settings {
                 ("skin".into(),self.skin.key().into()),
                 ("island_shape".into(),self.island_shape.key().into()),
                 ("dock".into(),self.dock.key().into()),
+                ("animation_rate".into(),self.animation_rate.key().into()),
                 ("glass_blur".into(),(self.glass_blur as u8).to_string()),
                 ("island_size".into(),island_size_value(self.island_size).to_string()),
                 ("island_offset".into(),self.island_offset.clamp(-ISLAND_OFFSET_MAX,ISLAND_OFFSET_MAX).to_string()),
@@ -784,6 +832,17 @@ mod tests {
         assert_eq!((s.skin, s.glass_blur, s.island_scale(), s.island_offset_ratio()), (Skin::Classic, true, 1.0, 0.0));
         s.island_size = 125; s.island_offset = -250;
         assert_eq!((s.island_scale(), s.island_offset_ratio()), (1.25, -1.0));
+    }
+
+    #[test]
+    fn animation_rate_round_trips_and_reduces_power_saver_frames() {
+        assert_eq!(Settings::default().animation_rate, AnimationRate::Standard);
+        for rate in AnimationRate::ALL { assert_eq!(AnimationRate::parse(rate.key()), rate); }
+        assert_eq!(AnimationRate::parse("unknown"), AnimationRate::Standard);
+        assert!(AnimationRate::PowerSaver.transition_interval() > AnimationRate::Standard.transition_interval());
+        assert!(AnimationRate::PowerSaver.ambient_interval() > AnimationRate::Standard.ambient_interval());
+        assert!(AnimationRate::PowerSaver.pet_interval(false) > AnimationRate::Standard.pet_interval(false));
+        assert_eq!(AnimationRate::PowerSaver.pet_interval(true), AnimationRate::Standard.pet_interval(true));
     }
 
     #[test]

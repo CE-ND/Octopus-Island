@@ -389,6 +389,38 @@ mod blur_piece_tests {
     }
 }
 
+/// 按动画档位和当前场景计算下一次重绘间隔。静止时两档都保持 1 秒核对提醒。
+pub(crate) fn repaint_interval(rate: model::AnimationRate, transitioning: bool, ambient: bool, pet_visible: bool, sleeping: bool) -> std::time::Duration {
+    std::time::Duration::from_secs_f64(if transitioning {
+        rate.transition_interval()
+    } else if ambient {
+        rate.ambient_interval()
+    } else if pet_visible {
+        rate.pet_interval(sleeping)
+    } else {
+        1.0
+    })
+}
+
+#[cfg(test)]
+mod repaint_rate_tests {
+    use super::*;
+
+    #[test]
+    fn power_saver_reduces_animation_without_slowing_idle_checks() {
+        use model::AnimationRate::{PowerSaver, Standard};
+        assert_eq!(repaint_interval(Standard, true, false, false, false), std::time::Duration::from_secs_f64(1.0 / 60.0));
+        assert_eq!(repaint_interval(Standard, false, true, false, false), std::time::Duration::from_secs_f64(1.0 / 30.0));
+        assert_eq!(repaint_interval(Standard, false, false, true, false), std::time::Duration::from_secs_f64(0.05));
+        assert_eq!(repaint_interval(Standard, false, false, true, true), std::time::Duration::from_secs_f64(0.1));
+        assert!(repaint_interval(PowerSaver, true, false, false, false) > repaint_interval(Standard, true, false, false, false));
+        assert!(repaint_interval(PowerSaver, false, true, false, false) > repaint_interval(Standard, false, true, false, false));
+        assert!(repaint_interval(PowerSaver, false, false, true, false) > repaint_interval(Standard, false, false, true, false));
+        assert_eq!(repaint_interval(PowerSaver, false, false, false, false), std::time::Duration::from_secs(1));
+        assert_eq!(repaint_interval(Standard, false, false, false, false), std::time::Duration::from_secs(1));
+    }
+}
+
 pub struct FrameOut {
     /// 原生窗口应保留的可见区域（相对 `win` 左上角）。
     pub region: Rect,
@@ -1887,8 +1919,8 @@ impl App {
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
             || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
         let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
-        // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
-        let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
+        // 交互形变、媒体和宠物按档位分级刷新；静态界面每秒核对提醒。
+        let repaint_after=repaint_interval(self.settings.animation_rate,transitioning,ambient,pet_visible,self.pet.state==PetState::Sleeping);
         cmds.append(&mut self.pending);
         FrameOut {
             region: rel(floating_toast.into_iter().chain(self.shelf_menu_rect.map(|r|r.union(r + ctx.style().visuals.popup_shadow.margin()).expand(1.0 / ctx.pixels_per_point()))).fold(region,Rect::union).intersect(ui.max_rect())),

@@ -1301,6 +1301,15 @@ impl App {
                             setting_row(ui,"岛仔吉祥物","收起时常驻，播放音乐时一起唱歌",&mut pet);
                             if pet!=self.settings.pet {self.set_pet(pet);}
                         });
+                        settings_label(ui,"性能");
+                        settings_card(ui,|ui|{
+                            use crate::model::AnimationRate;
+                            let rates:Vec<(AnimationRate,&str)>=AnimationRate::ALL.iter().map(|rate|(*rate,rate.label())).collect();
+                            settings_control_row_right(ui,"动画帧率",|ui|{
+                                if settings_segmented(ui,&mut self.settings.animation_rate,&rates,72.0){ctx.request_repaint();}
+                            });
+                            settings_hint(ui,self.settings.animation_rate.description());
+                        });
                         self.avoidance.settings(ui,&mut self.settings);
                         settings_label(ui,"声音与显示");
                         settings_card(ui,|ui|{
