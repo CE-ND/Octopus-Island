@@ -323,7 +323,7 @@ impl App {
         if self.notice.as_ref().is_some_and(|a|!allowed(a)){self.notice=None;}
         if self.hud_notice.as_ref().is_some_and(|a|!allowed(a)){self.hud_notice=None;}
         if !self.settings.notification_preview {
-            for a in self.alerts.iter_mut().chain(self.notice.iter_mut()).chain(self.hud_notice.iter_mut()) {
+            for a in self.alerts.iter_mut().chain(self.notice.iter_mut()).chain(self.view.hud_notice.iter_mut()) {
                 if matches!(&a.source,AlertSource::External(_)){a.body="收到新通知 · 内容已隐藏".into();}
             }
         }
@@ -1258,6 +1258,8 @@ impl App {
                         });
                         settings_label(ui,"岛体显示");
                         settings_card(ui,|ui|{
+                            setting_row(ui,"多屏显示","每块已连接的显示器各显示一个灵动岛；设置和内容仍然共用。",&mut self.settings.multi_display);
+                            ui.separator();
                             let selected_label=self.displays.iter().find(|d|d.id==self.settings.display_id).map(|d|d.label.clone());
                             let selected_connected=selected_label.is_some();
                             let label=if self.settings.display_id.is_empty(){"跟随主屏"}else{selected_label.as_deref().unwrap_or("所选屏幕未连接")};
@@ -1273,7 +1275,14 @@ impl App {
                                 ctx.request_repaint();
                             }
                             let edge=self.settings.dock.label();
-                            ui.label(egui::RichText::new(if !self.settings.display_id.is_empty()&&!selected_connected{"暂时显示在主屏，重新连接所选屏幕后自动恢复。".to_string()}else{format!("显示在所选屏幕{edge}；断开时暂时回到主屏。")}).size(11.0).color(ui.visuals().weak_text_color()));
+                            let display_hint=if self.settings.multi_display {
+                                "多屏显示已开启：每块已连接屏幕各一个岛；这里的「显示屏」决定主岛位置和帧率设置的目标屏幕。".to_string()
+                            } else if !self.settings.display_id.is_empty()&&!selected_connected {
+                                "暂时显示在主屏，重新连接所选屏幕后自动恢复。".to_string()
+                            } else {
+                                format!("显示在所选屏幕{edge}；断开时暂时回到主屏。")
+                            };
+                            ui.label(egui::RichText::new(display_hint).size(11.0).color(ui.visuals().weak_text_color()));
                             ui.add_space(4.0);
                             // 停靠边缘：顶部为横向；左右为竖向排列，展开面板从边缘滑出。
                             let docks:Vec<(crate::model::Dock,&str)>=crate::model::Dock::ALL.iter().map(|d|(*d,d.label())).collect();

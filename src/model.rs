@@ -273,6 +273,8 @@ pub fn island_size_value(value: u32) -> u32 {
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub display_id: String,
+    /// 多屏模式：每块已连接显示器各显示一个灵动岛。
+    pub multi_display: bool,
     /// 岛体皮肤、毛玻璃是否使用系统模糊、大小百分比、水平位置。
     pub skin: Skin,
     pub island_shape: IslandShape,
@@ -335,7 +337,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, animation_rate: AnimationRate::Standard, display_rates: Vec::new(), settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 8], page_order: [0,1,2,3,4,5,6,7], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true }
+        Self { display_id: String::new(), multi_display: true, skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, animation_rate: AnimationRate::Standard, display_rates: Vec::new(), settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 8], page_order: [0,1,2,3,4,5,6,7], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true }
     }
 }
 
@@ -385,6 +387,7 @@ impl Settings {
             match k.as_str() {
                 "settings_theme" => s.settings_theme=crate::settings_theme::SettingsTheme::parse(&v),
                 "display_id" => s.display_id = v,
+                "multi_display" => s.multi_display = v != "0",
                 "skin" => {
                     // 早期测试版把胶囊当作皮肤保存。
                     if v == "pill" { s.island_shape = IslandShape::Pill; }
@@ -475,6 +478,7 @@ impl Settings {
             &config_dir().join("settings.txt"),
             &[
                 ("display_id".into(),self.display_id.clone()),
+                ("multi_display".into(),(self.multi_display as u8).to_string()),
                 ("skin".into(),self.skin.key().into()),
                 ("island_shape".into(),self.island_shape.key().into()),
                 ("dock".into(),self.dock.key().into()),

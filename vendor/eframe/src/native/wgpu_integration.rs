@@ -9,7 +9,7 @@ use std::{cell::RefCell, num::NonZeroU32, rc::Rc, sync::Arc, time::Instant};
 
 use egui_winit::ActionRequested;
 use parking_lot::Mutex;
-use raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _};
+use raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _, RawWindowHandle};
 use winit::{
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     window::{Window, WindowId},
@@ -277,6 +277,13 @@ impl<'app> WgpuWinitApp<'app> {
 
         let mut info = ViewportInfo::default();
         egui_winit::update_viewport_info(&mut info, &egui_ctx, &window, true);
+
+        #[cfg(target_os = "windows")]
+        if let Ok(handle) = window.window_handle() {
+            if let RawWindowHandle::Win32(handle) = handle.as_raw() {
+                crate::viewport_windows::register(ViewportId::ROOT, handle.hwnd.get() as isize);
+            }
+        }
 
         let mut viewports = Viewports::default();
         viewports.insert(
@@ -878,6 +885,12 @@ impl Viewport {
                 windows_id.insert(window.id(), viewport_id);
 
                 let window = Arc::new(window);
+                #[cfg(target_os = "windows")]
+                if let Ok(handle) = window.window_handle() {
+                    if let RawWindowHandle::Win32(handle) = handle.as_raw() {
+                        crate::viewport_windows::register(viewport_id, handle.hwnd.get() as isize);
+                    }
+                }
 
                 if let Err(err) =
                     pollster::block_on(painter.set_window(viewport_id, Some(window.clone())))
@@ -1050,6 +1063,10 @@ pub(crate) fn remove_viewports_not_in(
     let active_viewports_ids: ViewportIdSet = viewport_output.keys().copied().collect();
 
     // Prune dead viewports:
+    #[cfg(target_os = "windows")]
+    for id in viewports.keys().copied().filter(|id| !active_viewports_ids.contains(id)) {
+        crate::viewport_windows::unregister(id);
+    }
     viewports.retain(|id, _| active_viewports_ids.contains(id));
     viewport_from_window.retain(|_, id| active_viewports_ids.contains(id));
     painter.gc_viewports(&active_viewports_ids);

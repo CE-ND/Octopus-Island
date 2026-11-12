@@ -57,6 +57,19 @@ struct Shell {
     backdrop: Option<octopus_island::backdrop::Sampler>,
     #[cfg(windows)]
     native: Option<octopus_island::native::Window>,
+    /// root 窗口创建时拿到的渲染器信息，供额外 viewport 安装原生行为。
+    #[cfg(windows)]
+    native_caps: Option<octopus_island::native::Caps>,
+    /// 除 root 外的每块显示器窗口。
+    #[cfg(windows)]
+    extras: Vec<IslandWindow>,
+    /// 额外窗口产生的命令，由 root 更新统一处理。
+    #[cfg(windows)]
+    extra_cmds: Vec<Cmd>,
+    /// 显示器列表轮询，用于热插拔。
+    displays_at: PollClock,
+    /// 额外 viewport 回调的存活标记；Shell 析构后回调不再解引用。
+    alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
     #[cfg(windows)]
     tray: Option<octopus_island::tray::Tray>,
     #[cfg(windows)]
@@ -76,6 +89,31 @@ struct Shell {
     quota: octopus_island::quota::Service,
     quota_sig: Option<(bool,Vec<octopus_island::quota::Account>)>,
     quota_at: PollClock,
+}
+
+/// 除 root 之外的每一块副屏窗口。
+#[cfg(windows)]
+struct IslandWindow {
+    display_id: String,
+    bounds: octopus_island::display_layout::Bounds,
+    viewport_id: egui::ViewportId,
+    title: String,
+    native: Option<octopus_island::native::Window>,
+    backdrop: Option<octopus_island::backdrop::Sampler>,
+    hidden: bool,
+    placed: bool,
+}
+
+/// `show_viewport_deferred` 要求回调 `Send + Sync + 'static`，而 App/Shell 只能在
+/// 主线程使用。eframe 的 deferred 回调实际在主线程事件循环里调用，因此这里只传
+/// 裸指针 + 存活标记；回调入口先检查存活标记，再解引用。
+#[cfg(windows)]
+#[derive(Clone)]
+struct ViewCallback {
+    /// `Shell` 的地址。用 usize 存，避免裸指针让闭包失去 Send/Sync。
+    shell: usize,
+    display_id: String,
+    alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Shell {
@@ -119,6 +157,8 @@ impl Shell {
         #[cfg(windows)] let system_rx=octopus_island::system::observe(cc.egui_ctx.clone(),system_state.clone(),initial_input);
         // 岛体大小只作用于主窗口，在首帧之前生效，避免启动时先按 100% 闪一下。
         #[cfg(windows)] eframe::set_root_viewport_scale(app.settings.island_scale());
+        #[cfg(windows)] let native_caps = Some(octopus_island::native::Caps::from_creation(cc));
+        #[cfg(windows)] let native = octopus_island::native::Window::new(cc);
         Self {
             app,
             t0: Instant::now(),
@@ -151,8 +191,12 @@ impl Shell {
             #[cfg(windows)] tray_opening:None,
             #[cfg(windows)] hidden:false,
             #[cfg(windows)] backdrop:None,
-            #[cfg(windows)]
-            native: octopus_island::native::Window::new(cc),
+            #[cfg(windows)] native,
+            #[cfg(windows)] native_caps,
+            #[cfg(windows)] extras: Vec::new(),
+            #[cfg(windows)] extra_cmds: Vec::new(),
+            displays_at: PollClock::default(),
+            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             #[cfg(windows)]
             tray,
             #[cfg(windows)]
@@ -203,6 +247,214 @@ impl Shell {
         }
     }
 
+    #[cfg(windows)]
+    fn rate_for(&self, display_id: &str) -> octopus_island::model::AnimationRate {
+        self.app.settings.display_rate(display_id).unwrap_or(self.app.settings.animation_rate)
+    }
+
+    /// 刷新显示器列表，并同步 root/副屏窗口。多屏开关关闭时保留原单窗口行为。
+    #[cfg(windows)]
+    fn sync_island_windows(&mut self, ctx: &egui::Context) {
+        if self.app.displays.is_empty() || self.displays_at.ready(Duration::from_secs(1)) {
+            self.app.displays = octopus_island::display_layout::connected();
+            self.displays_at = PollClock::now();
+        }
+        let root = octopus_island::display_layout::selected(&self.app.displays, &self.app.settings.display_id)
+            .map(|display| display.id.clone());
+        if let Some(root_id) = root {
+            self.app.view.display_id = root_id.clone();
+            self.app.view.current_rate = self.rate_for(&root_id);
+        }
+
+        if !self.app.settings.multi_display || self.app.displays.len() < 2 {
+            self.extras.clear();
+            self.app.views.clear();
+            return;
+        }
+
+        let root_id = self.app.view.display_id.clone();
+        let wanted: Vec<String> = self.app.displays.iter()
+            .filter(|display| display.id != root_id)
+            .map(|display| display.id.clone())
+            .collect();
+        self.extras.retain(|window| wanted.contains(&window.display_id));
+        self.app.views.retain(|id, _| wanted.contains(id));
+
+        for display in self.app.displays.clone() {
+            if display.id == root_id { continue; }
+            let viewport_id = egui::ViewportId::from_hash_of(("octopus-island-display", display.id.as_str()));
+            let rate = self.rate_for(&display.id);
+            self.app.ensure_view(&display.id, viewport_id, rate);
+            let index = if let Some(index) = self.extras.iter().position(|window| window.display_id == display.id) {
+                self.extras[index].bounds = display.bounds;
+                index
+            } else {
+                let title = "岛仔".to_string();
+                self.extras.push(IslandWindow {
+                    display_id: display.id.clone(),
+                    bounds: display.bounds,
+                    viewport_id,
+                    title,
+                    native: None,
+                    backdrop: None,
+                    hidden: false,
+                    placed: false,
+                });
+                self.extras.len() - 1
+            };
+            let placed = self.extras[index].placed;
+            let title = self.extras[index].title.clone();
+            let builder = egui::ViewportBuilder::default()
+                .with_title(title)
+                .with_icon(octopus_island::theme::app_icon())
+                .with_inner_size([app::CANVAS_W, app::WIN_H])
+                .with_decorations(false)
+                .with_transparent(true)
+                .with_active(false)
+                .with_resizable(false)
+                .with_taskbar(false)
+                .with_always_on_top()
+                .with_visible(placed);
+            let callback = std::sync::Arc::new(ViewCallback {
+                shell: self as *mut Shell as usize,
+                display_id: display.id.clone(),
+                alive: self.alive.clone(),
+            });
+            ctx.show_viewport_deferred(viewport_id, builder, move |ctx, _class| {
+                if callback.alive.load(std::sync::atomic::Ordering::Relaxed) {
+                    // SAFETY: eframe calls deferred viewport callbacks on the main thread,
+                    // and `alive` is cleared in Shell::drop before the pointer can dangle.
+                    let shell = callback.shell as *mut Shell;
+                    unsafe { (&mut *shell).render_extra(&callback.display_id, ctx); }
+                }
+            });
+        }
+    }
+
+    /// 额外显示器的环境：原点、光标、屏幕、毛玻璃和浏览器状态都按这个 HWND 计算。
+    #[cfg(windows)]
+    fn env_extra(&mut self, index: usize, ctx: &egui::Context) -> Env {
+        let (clock, today, date) = local_now();
+        let ppp = ctx.pixels_per_point();
+        let origin = self.extras[index].native.as_ref()
+            .and_then(|native| native.logical_origin(ppp))
+            .unwrap_or(Pos2::new(0.0, 0.0));
+        let cursor = cursor_logical(ppp).map(|(x, y)| Pos2::new(x - origin.x, y - origin.y));
+        let display_id = self.extras[index].display_id.clone();
+        let screen = self.app.displays.iter().find(|display| display.id == display_id).map(|display| {
+            let b = display.bounds;
+            egui::Rect::from_min_max(
+                Pos2::new(b.left as f32 / ppp - origin.x, b.top as f32 / ppp - origin.y),
+                Pos2::new(b.right as f32 / ppp - origin.x, b.bottom as f32 / ppp - origin.y),
+            )
+        });
+        let (backdrop, glass_blur) = (
+            self.extras[index].backdrop.as_ref().and_then(|backdrop| backdrop.color()),
+            self.extras[index].native.as_ref().is_some_and(|native| native.blur_active()),
+        );
+        let browser_at_top = if self.app.settings.browser_minimal {
+            self.extras[index].native.as_mut().and_then(|native| native.browser_at_top(&self.app.settings))
+        } else {
+            None
+        };
+        let opaque_surface = self.extras[index].native.as_ref().is_some_and(|native| native.opaque_surface());
+        Env {
+            t: self.t0.elapsed().as_secs_f64(),
+            clock,
+            today,
+            date,
+            battery: self.sys.0,
+            charging: self.sys.1,
+            network: Some(self.system_state.network),
+            cursor,
+            idle_seconds: Some(octopus_island::system::idle_seconds()),
+            browser_at_top,
+            media: self.media.lock().map(|m| m.clone()).unwrap_or_default(),
+            volume: self.system_state.volume,
+            bt: self.bt.clone(),
+            bt_ready: self.bt_ready,
+            screen,
+            backdrop,
+            glass_blur,
+            opaque_surface,
+        }
+    }
+
+    /// 绘制一个副屏岛体并更新它的 Win32 区域/命中区。
+    #[cfg(windows)]
+    fn render_extra(&mut self, display_id: &str, ctx: &egui::Context) {
+        let Some(index) = self.extras.iter().position(|window| window.display_id == display_id) else { return; };
+        if self.extras[index].native.is_none() {
+            let Some(hwnd) = eframe::viewport_hwnd(self.extras[index].viewport_id) else { return; };
+            let Some(caps) = self.native_caps.as_ref() else { return; };
+            self.extras[index].native = octopus_island::native::Window::attach_raw(hwnd, caps, ctx.clone());
+        }
+        let Some(display) = self.app.displays.iter().find(|display| display.id == display_id).cloned() else { return; };
+        let ppp = ctx.pixels_per_point();
+        let offset = self.app.settings.island_offset_ratio();
+        let dock = self.app.settings.dock;
+        if let Some(native) = &self.extras[index].native {
+            native.place_on_display(ppp, display.bounds, offset, dock);
+        }
+        let hidden = octopus_island::display_layout::hide_for_fullscreen(
+            self.app.settings.hide_fullscreen,
+            self.fullscreen,
+            Some(display.bounds),
+        );
+        self.extras[index].hidden = hidden;
+        if self.app.settings.skin.is_glass() && !hidden {
+            let native_origin = self.extras[index].native.as_ref().and_then(|native| native.logical_origin(ppp));
+            if let Some(origin) = native_origin {
+                let points = self.app.backdrop_points();
+                let sampler = self.extras[index].backdrop.get_or_insert_with(octopus_island::backdrop::Sampler::start);
+                sampler.set_points(points.iter().map(|&(x, y)| (((origin.x + x) * ppp).round() as i32, ((origin.y + y) * ppp).round() as i32)).collect());
+            }
+        } else {
+            self.extras[index].backdrop = None;
+        }
+        let env = self.env_extra(index, ctx);
+        let mut out = None;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(Color32::TRANSPARENT))
+            .show(ctx, |ui| {
+                let size = if self.app.settings.dock.is_side() {
+                    egui::vec2(octopus_island::side_dock::SIDE_W, octopus_island::side_dock::SIDE_H)
+                } else {
+                    egui::vec2(app::WIN_W, app::WIN_H)
+                };
+                let win = egui::Rect::from_min_size(ui.max_rect().min, size);
+                out = Some(self.app.frame_view(display_id, ui, win, &env));
+            });
+        let Some(out) = out else { return; };
+        if let Some(native) = &mut self.extras[index].native {
+            let r = |rect: egui::Rect| (rect.left(), rect.top(), rect.width(), rect.height());
+            let region = if hidden { (0.0, 0.0, 0.0, 0.0) } else { r(out.region) };
+            let hit = if hidden { (0.0, 0.0, 0.0, 0.0) } else { r(out.hit) };
+            native.update(
+                region,
+                hit,
+                if hidden { None } else { out.notice_hit.map(r) },
+                if hidden { None } else { out.file_drop_zone.map(r) },
+                if hidden { None } else { out.glass.as_deref() },
+                ppp,
+                out.editing,
+                !hidden && out.expanded,
+            );
+        }
+        let had_cmds = !out.cmds.is_empty();
+        self.extra_cmds.extend(out.cmds);
+        if had_cmds { ctx.request_repaint_of(egui::ViewportId::ROOT); }
+        if !self.extras[index].placed {
+            self.extras[index].placed = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        }
+        if hidden {
+            schedule_repaint(ctx, Duration::from_secs(1));
+        } else {
+            schedule_repaint(ctx, out.repaint_after);
+        }
+    }
+
     fn env(&mut self, ctx: &egui::Context) -> Env {
         let (clock, today, date) = local_now();
         // 电量变化很慢，每 5 秒读一次就够
@@ -219,7 +471,9 @@ impl Shell {
         let cursor = cursor_logical(ppp).map(|(x, y)| Pos2::new(x - origin.x, y - origin.y));
         // 所在屏幕换算到窗口逻辑坐标，供通知详情等浮层避开屏幕边缘。
         #[cfg(windows)]
-        let screen=octopus_island::display_layout::selected(&self.app.displays,&self.app.settings.display_id).map(|d|{
+        let root_display_id=if self.app.view.display_id.is_empty(){&self.app.settings.display_id}else{&self.app.view.display_id};
+        #[cfg(windows)]
+        let screen=octopus_island::display_layout::selected(&self.app.displays,root_display_id).map(|d|{
             let b=d.bounds;
             egui::Rect::from_min_max(Pos2::new(b.left as f32/ppp-origin.x,b.top as f32/ppp-origin.y),Pos2::new(b.right as f32/ppp-origin.x,b.bottom as f32/ppp-origin.y))
         });
@@ -289,8 +543,11 @@ impl eframe::App for Shell {
         #[cfg(windows)] eframe::set_root_viewport_scale(self.app.settings.island_scale());
         #[cfg(windows)]
         {
-            // 用帧间隔限制刷新，绕过部分 Intel 驱动在垂直同步中的忙等待；上限跟随动画档位。
-            let max_fps=self.app.settings.animation_rate.max_fps() as f64;
+            // 用帧间隔限制刷新，绕过部分 Intel 驱动在垂直同步中的忙等待；上限取所有岛体档位的最高值。
+            let max_fps=self.app.displays.iter()
+                .map(|display| self.rate_for(&display.id).max_fps())
+                .max()
+                .unwrap_or(self.app.settings.animation_rate.max_fps()) as f64;
             let delay=Duration::from_secs_f64(1.0/max_fps).saturating_sub(self.frame_at.elapsed());
             if !delay.is_zero(){std::thread::sleep(delay);}
             self.frame_at=Instant::now();
@@ -302,17 +559,19 @@ impl eframe::App for Shell {
         #[cfg(windows)]
         if foreground_changed {
             // 切到别的程序：收起，并在光标离开前不再自动展开
-            self.app.foreground_changed();
+            self.app.foreground_changed_all();
         }
         #[cfg(windows)]
-        let placement_key=(self.app.settings.display_id.clone(),self.app.settings.island_offset,self.app.settings.dock);
+        self.sync_island_windows(ctx);
+        #[cfg(windows)]
+        let placement_key=(self.app.view.display_id.clone(),self.app.settings.island_offset,self.app.settings.dock);
         #[cfg(windows)]
         if !self.placed || self.placement_scale!=ctx.pixels_per_point() || self.placement_key!=placement_key || self.placement_at.ready(Duration::from_secs(1)) {
             self.placement_at=PollClock::now();
             self.placement_scale=ctx.pixels_per_point();
             self.placement_key=placement_key;
             self.app.displays=octopus_island::display_layout::connected();
-            let display=octopus_island::display_layout::selected(&self.app.displays,&self.app.settings.display_id);
+            let display=octopus_island::display_layout::selected(&self.app.displays,&self.app.view.display_id);
             let offset=self.app.settings.island_offset_ratio();
             if display.is_some_and(|d|self.native.as_ref().is_some_and(|w|w.place_on_display(self.placement_scale,d.bounds,offset,self.app.settings.dock))) {
                 if !self.placed {diagnostics::startup("目标屏幕物理坐标定位完成，已请求显示");}
@@ -491,7 +750,10 @@ impl eframe::App for Shell {
             let hit=if self.hidden {(0.0,0.0,0.0,0.0)} else {r(out.hit)};
             native.update(region, hit, if self.hidden{None}else{out.notice_hit.map(r)},if self.hidden{None}else{out.file_drop_zone.map(r)},if self.hidden{None}else{out.glass.as_deref()},ctx.pixels_per_point(), out.editing, !self.hidden && out.expanded);
         }
-        for cmd in out.cmds {
+        let mut cmds = out.cmds;
+        #[cfg(windows)]
+        cmds.append(&mut self.extra_cmds);
+        for cmd in cmds {
             match cmd {
                 Cmd::Media(t) => {
                     let source=self.media.lock().map(|media|media.source.clone()).unwrap_or_default();
@@ -608,6 +870,12 @@ impl eframe::App for Shell {
         #[cfg(windows)] let repaint_after=if self.hidden{Duration::from_secs(1)}else{out.repaint_after};
         #[cfg(not(windows))] let repaint_after=out.repaint_after;
         schedule_repaint(ctx,repaint_after);
+    }
+}
+
+impl Drop for Shell {
+    fn drop(&mut self) {
+        self.alive.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

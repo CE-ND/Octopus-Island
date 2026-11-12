@@ -10,6 +10,7 @@
 //! - 原版没有可用的 Esc 收起入口（§2.5），这里也不注册键盘钩子。
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -26,8 +27,9 @@ const SUBCLASS_ID: usize = 0x4E55_5341; // "OCTOPUS_ISLAND"
 #[allow(dead_code)]
 const WS_EX_NOREDIRECTIONBITMAP: isize = 0x0020_0000;
 
-/// 命中区（物理像素，窗口坐标，left/top/right/bottom）。
-static HIT: OnceLock<Mutex<Vec<(i32, i32, i32, i32)>>> = OnceLock::new();
+/// 每个原生窗口独立的命中区（物理像素，窗口坐标，left/top/right/bottom）。
+/// 多屏时多个 HWND 共用同一套子类回调，不能再用一个全局 Vec。
+static HIT: OnceLock<Mutex<HashMap<isize, Vec<(i32, i32, i32, i32)>>>> = OnceLock::new();
 /// 前台窗口切到别的进程时置位，由主线程消费。
 static FG_CHANGED: AtomicBool = AtomicBool::new(false);
 
@@ -35,12 +37,22 @@ static FG_CHANGED: AtomicBool = AtomicBool::new(false);
 // 会回 ERROR_INVALID_PARAMETER），本项目用 GL 合成窗口，加上这一位后画面上什么都
 // 看不到，因此不使用；具体见 `apply_style` 注释与交付说明。
 
-fn hit() -> &'static Mutex<Vec<(i32, i32, i32, i32)>> {
-    HIT.get_or_init(|| Mutex::new(Vec::new()))
+fn hits() -> &'static Mutex<HashMap<isize, Vec<(i32, i32, i32, i32)>>> {
+    HIT.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn inside_hit(x: i32, y: i32) -> bool {
-    hit().lock().unwrap_or_else(|e|e.into_inner()).iter().any(|&(l,t,r,b)|x>=l&&x<r&&y>=t&&y<b)
+fn inside_hit(hwnd: HWND, x: i32, y: i32) -> bool {
+    let key = hwnd.0 as isize;
+    hits().lock().unwrap_or_else(|e|e.into_inner())
+        .get(&key).is_some_and(|rects| rects.iter().any(|&(l,t,r,b)|x>=l&&x<r&&y>=t&&y<b))
+}
+
+fn store_hits(hwnd: HWND, rects: Vec<(i32, i32, i32, i32)>) {
+    hits().lock().unwrap_or_else(|e|e.into_inner()).insert(hwnd.0 as isize, rects);
+}
+
+fn forget_hits(hwnd: HWND) {
+    hits().lock().unwrap_or_else(|e|e.into_inner()).remove(&(hwnd.0 as isize));
 }
 
 fn file_drag_region(region:(i32,i32,i32,i32),zone:Option<(i32,i32,i32,i32)>,capture:bool)->(i32,i32,i32,i32){
@@ -234,7 +246,7 @@ unsafe extern "system" fn subclass(
         if GetWindowRect(hwnd, &mut rect).is_ok() {
             let px = x - rect.left;
             let py = y - rect.top;
-            return if inside_hit(px, py) {
+            return if inside_hit(hwnd, px, py) {
                 LRESULT(HTCLIENT as isize)
             } else {
                 LRESULT(HTTRANSPARENT as isize)
@@ -328,6 +340,29 @@ fn surface_needs_outline_clip(backend:Option<eframe::wgpu::Backend>,vendor:&str,
     })
 }
 
+/// 创建窗口时才能拿到的渲染器信息；root 和额外 viewport 共用同一套判断。
+#[derive(Clone)]
+pub struct Caps {
+    backend: Option<eframe::wgpu::Backend>,
+    vendor: String,
+    renderer: String,
+}
+
+impl Caps {
+    pub fn from_creation(cc: &eframe::CreationContext<'_>) -> Self {
+        let backend = cc.wgpu_render_state.as_ref().map(|state| state.adapter.get_info().backend);
+        let (vendor, renderer) = cc.gl.as_ref().map(|gl| {
+            use eframe::glow::HasContext;
+            unsafe { (gl.get_parameter_string(eframe::glow::VENDOR), gl.get_parameter_string(eframe::glow::RENDERER)) }
+        }).unwrap_or_default();
+        Self { backend, vendor, renderer }
+    }
+
+    pub fn opaque_surface(&self) -> bool {
+        surface_needs_outline_clip(self.backend, &self.vendor, &self.renderer)
+    }
+}
+
 pub struct Window {
     hwnd: HWND,
     region: (i32, i32, i32, i32),
@@ -348,7 +383,16 @@ impl Window {
 
     pub fn new(cc: &eframe::CreationContext<'_>) -> Option<Self> {
         let RawWindowHandle::Win32(handle) = cc.window_handle().ok()?.as_raw() else { return None };
-        let hwnd = HWND(handle.hwnd.get() as *mut _);
+        Self::attach(HWND(handle.hwnd.get() as *mut _), &Caps::from_creation(cc), cc.egui_ctx.clone())
+    }
+
+    /// 给一个已经由 eframe/winit 创建的窗口安装岛体原生行为。
+    pub fn attach_raw(hwnd: isize, caps: &Caps, ctx: eframe::egui::Context) -> Option<Self> {
+        Self::attach(HWND(hwnd as *mut _), caps, ctx)
+    }
+
+    /// 给一个已经由 eframe/winit 创建的窗口安装岛体原生行为。
+    pub fn attach(hwnd: HWND, caps: &Caps, ctx: eframe::egui::Context) -> Option<Self> {
         let hook = unsafe {
             apply_style(hwnd, false, false);
             let _=enable_alpha_composition(hwnd);
@@ -365,14 +409,9 @@ impl Window {
         };
         // 区域用哨兵值：首帧（包括启动即隐藏的空区域）也必须真正调用 SetWindowRgn，
         // 否则整块透明画布会挡住下层程序的点击。
-        let backend=cc.wgpu_render_state.as_ref().map(|state|state.adapter.get_info().backend);
-        let (vendor,renderer)=cc.gl.as_ref().map(|gl|{
-            use eframe::glow::HasContext;
-            unsafe{(gl.get_parameter_string(eframe::glow::VENDOR),gl.get_parameter_string(eframe::glow::RENDERER))}
-        }).unwrap_or_default();
-        let opaque_surface=surface_needs_outline_clip(backend,&vendor,&renderer);
+        let opaque_surface = caps.opaque_surface();
         if opaque_surface{glass_diagnostic("渲染兼容：已启用岛体轮廓裁剪，避免透明画布出现黑块");}
-        watch_drag(hwnd,cc.egui_ctx.clone());
+        watch_drag(hwnd, ctx);
         Some(Self { hwnd, region: (i32::MIN, 0, 0, 0), expanded: false, hook, browser_state:(None,PollClock::default()), drag_capture:DragCapture::default(), glass:None, backdrop:None, blur:false, blur_unavailable:false, opaque_surface })
     }
 
@@ -446,7 +485,7 @@ impl Window {
         );
         let mut hits=vec![h];
         if let Some((x,y,w,h))=notice_hit {hits.push((px(x),px(y),px(x+w),px(y+h)));}
-        *hit().lock().unwrap_or_else(|e| e.into_inner()) = hits;
+        store_hits(self.hwnd, hits);
         // 毛玻璃：合成引擎的模糊块贴合岛体轮廓，窗口区域仍用矩形（含阴影与拖放感应区）。
         let _ = capture;
         match glass.filter(|g|!g.is_empty() && !self.blur_unavailable && !self.opaque_surface && compositor_blur_allowed()) {
@@ -518,6 +557,7 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
+        forget_hits(self.hwnd);
         unsafe {
             let _ = RemoveWindowSubclass(self.hwnd, Some(subclass), SUBCLASS_ID);
             if !self.hook.is_invalid() {
@@ -532,6 +572,16 @@ mod tests {
     use super::*;
     static NATIVE_STATE_LOCK:Mutex<()>=Mutex::new(());
 
+    fn take_hits(hwnd: HWND) -> Option<Vec<(i32, i32, i32, i32)>> {
+        hits().lock().unwrap_or_else(|e|e.into_inner()).remove(&(hwnd.0 as isize))
+    }
+
+    fn restore_hits(hwnd: HWND, saved: Option<Vec<(i32, i32, i32, i32)>>) {
+        let mut all = hits().lock().unwrap_or_else(|e|e.into_inner());
+        let key = hwnd.0 as isize;
+        if let Some(saved) = saved { all.insert(key, saved); } else { all.remove(&key); }
+    }
+
     #[test]
     fn opaque_surface_clips_black_background_even_without_system_blur(){
         let _guard=NATIVE_STATE_LOCK.lock().unwrap_or_else(|e|e.into_inner());
@@ -544,7 +594,7 @@ mod tests {
         ] {for blur_unavailable in [true,false] {for ppp in [1.0,1.25,1.5,2.0] {unsafe {
             let px=|v:f32|(v*ppp).round() as i32;
             let hwnd=CreateWindowExW(WS_EX_TOOLWINDOW,windows::core::w!("STATIC"),windows::core::w!(""),WS_POPUP,-10000,-10000,px(400.0),px(200.0),None,None,None,None).unwrap();
-            let saved=hit().lock().unwrap_or_else(|e|e.into_inner()).clone();
+            let saved=take_hits(hwnd);
             {
                 let mut native=Window{hwnd,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable,opaque_surface:surface_needs_outline_clip(backend,vendor,renderer)};
                 let shapes=[crate::app::GlassShape::Round(eframe::egui::Rect::from_min_max(eframe::egui::pos2(80.0,60.0),eframe::egui::pos2(320.0,160.0)),25.0)];
@@ -561,7 +611,7 @@ mod tests {
                 assert!(!PtInRegion(region,px(200.0),px(100.0)).as_bool(),"隐藏时不能留下上一帧轮廓");
                 let _=DeleteObject(region);
             }
-            *hit().lock().unwrap_or_else(|e|e.into_inner())=saved;
+            restore_hits(hwnd,saved);
             let _=DestroyWindow(hwnd);
         }}}}
     }
@@ -649,7 +699,7 @@ mod tests {
             SetWindowPos(cover.0,HWND_TOPMOST,0,0,0,0,flags).unwrap();
             assert!(above(cover.0,island.0),"先复现其他窗口盖住岛体");
             let foreground=GetForegroundWindow();
-            let saved=hit().lock().unwrap_or_else(|e|e.into_inner()).clone();
+            let saved=take_hits(island.0);
             let mut native=Window{hwnd:island.0,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:false,opaque_surface:false};
             let update=|native:&mut Window,expanded|native.update((0.0,0.0,416.0,140.0),(0.0,0.0,416.0,140.0),None,None,None,1.0,false,expanded);
             update(&mut native,true);
@@ -668,7 +718,7 @@ mod tests {
             update(&mut native,true);
             assert!(above(island.0,cover.0),"再次展开也必须恢复实际置顶顺序");
             assert_eq!(GetForegroundWindow(),foreground);
-            *hit().lock().unwrap_or_else(|e|e.into_inner())=saved;
+            restore_hits(island.0,saved);
         }
     }
 
@@ -686,8 +736,9 @@ mod tests {
     fn file_capture_below_the_island_still_returns_click_through(){
         let _guard=NATIVE_STATE_LOCK.lock().unwrap_or_else(|e|e.into_inner());
         unsafe {
-            let saved=std::mem::replace(&mut *hit().lock().unwrap_or_else(|e|e.into_inner()),vec![(230,0,410,42)]);
             let hwnd=CreateWindowExW(WS_EX_NOACTIVATE,windows::core::w!("STATIC"),windows::core::w!(""),WS_POPUP,0,0,640,270,None,None,None,None).unwrap();
+            let saved=take_hits(hwnd);
+            store_hits(hwnd,vec![(230,0,410,42)]);
             SetWindowSubclass(hwnd,Some(subclass),SUBCLASS_ID,0).unwrap();
             let region=file_drag_region((230,0,410,42),Some((110,0,530,120)),true);
             let rgn=CreateRectRgn(region.0,region.1,region.2,region.3);assert_ne!(SetWindowRgn(hwnd,rgn,false),0);
@@ -695,16 +746,18 @@ mod tests {
             let point=|x:i32,y:i32|LPARAM((((rect.top+y) as u32)<<16|((rect.left+x) as u16 as u32)) as isize);
             assert_eq!(SendMessageW(hwnd,WM_NCHITTEST,WPARAM(0),point(500,80)).0,HTTRANSPARENT as isize,"感应区中的普通点击仍须穿透");
             assert_eq!(SendMessageW(hwnd,WM_NCHITTEST,WPARAM(0),point(320,15)).0,HTCLIENT as isize,"岛体本身仍可交互");
-            let _=DestroyWindow(hwnd);*hit().lock().unwrap_or_else(|e|e.into_inner())=saved;
+            let _=DestroyWindow(hwnd);restore_hits(hwnd,saved);
         }
     }
 
     #[test]
     fn right_notice_keeps_empty_space_below_the_main_bar_click_through(){
         let _guard=NATIVE_STATE_LOCK.lock().unwrap_or_else(|e|e.into_inner());
-        let saved=std::mem::replace(&mut *hit().lock().unwrap_or_else(|e|e.into_inner()),vec![(100,0,400,30),(372,0,760,96)]);
-        assert!(inside_hit(600,70));assert!(inside_hit(200,15));assert!(!inside_hit(200,70));
-        *hit().lock().unwrap_or_else(|e|e.into_inner())=saved;
+        let hwnd=HWND(0x1234 as *mut _);
+        let saved=take_hits(hwnd);
+        store_hits(hwnd,vec![(100,0,400,30),(372,0,760,96)]);
+        assert!(inside_hit(hwnd,600,70));assert!(inside_hit(hwnd,200,15));assert!(!inside_hit(hwnd,200,70));
+        restore_hits(hwnd,saved);
     }
 
     #[test]

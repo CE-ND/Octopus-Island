@@ -17,7 +17,7 @@ use glutin::{
     prelude::{GlDisplay, PossiblyCurrentGlContext},
     surface::GlSurface,
 };
-use raw_window_handle::HasWindowHandle;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::{
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     window::{Window, WindowId},
@@ -1156,7 +1156,14 @@ impl GlutinWindowContext {
             );
 
             egui_winit::update_viewport_info(&mut viewport.info, &self.egui_ctx, &window, true);
-            viewport.window.insert(Arc::new(window))
+            let window = Arc::new(window);
+            #[cfg(target_os = "windows")]
+            if let Ok(handle) = window.window_handle() {
+                if let RawWindowHandle::Win32(handle) = handle.as_raw() {
+                    crate::viewport_windows::register(viewport_id, handle.hwnd.get() as isize);
+                }
+            }
+            viewport.window.insert(window)
         };
 
         viewport.egui_winit.get_or_insert_with(|| {
@@ -1302,6 +1309,10 @@ impl GlutinWindowContext {
             self.current_viewport = None;
         }
         // GC old viewports
+        #[cfg(target_os = "windows")]
+        for id in self.viewports.keys().copied().filter(|id| !viewport_output.contains_key(id)) {
+            crate::viewport_windows::unregister(id);
+        }
         self.viewports
             .retain(|id, _| viewport_output.contains_key(id));
         self.viewport_from_window

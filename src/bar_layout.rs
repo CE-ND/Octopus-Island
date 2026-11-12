@@ -109,6 +109,7 @@ impl Layout {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Motion {
     pub target: Layout,
     positions: Vec<Spring>,

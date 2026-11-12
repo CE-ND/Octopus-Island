@@ -17,6 +17,7 @@ use crate::smtc::{NowPlaying, Transport};
 use crate::theme::{self, size, W};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
 // ---------- 几何（逻辑点；原版 125% 截图 ÷ 1.25） ----------
@@ -628,22 +629,143 @@ impl CalendarState {
 
 }
 
+/// 单个灵动岛窗口的界面状态。
+///
+/// `App` 里放共享业务状态；这里放“展开/收起、悬停、拖拽、形变”这类必须按窗口
+/// 独立的状态。`App` 通过 `Deref` 指向当前视图，已有界面代码仍写 `self.open`、
+/// `self.w` 即可；多窗口渲染时用 `frame_view()` 临时换入目标窗口的状态。
+#[derive(Clone)]
+pub struct ViewState {
+    pub w: Spring,
+    pub h: Spring,
+    pub open: bool,
+    hover_since: Option<f64>,
+    leave_since: Option<f64>,
+    pub hover_lock: bool,
+    pub(crate) reveal: f32,
+    pub(crate) drag_hot: bool,
+    pub(crate) drag_a: f32,
+    drag_saved: Option<usize>,
+    forced_open_until: f64,
+    wheel_delta: f32,
+    wheel_at: f64,
+    wheel_page_at: f64,
+    pub(crate) shelf_menu_rect: Option<Rect>,
+    last_cursor: Option<Pos2>,
+    last_input: f64,
+    last_t: Option<f64>,
+    pub(crate) dt: f32,
+    pub(crate) cursor_local: Option<Pos2>,
+    browser_at_top: bool,
+    browser_minimal_active: bool,
+    glass_tint: f32,
+    screen: Option<Rect>,
+    notice_width: Spring,
+    notice_details: bool,
+    pub(crate) hud_notice: Option<Alert>,
+    hud_alpha: f32,
+    messenger_scroll: f32,
+    pet_a: f32,
+    pub(crate) resident: bar::Motion,
+    pub(crate) fluid_origin: Pos2,
+    /// 当前窗口对应的稳定显示器 ID。
+    pub display_id: String,
+    /// 当前窗口的 egui viewport ID；root 窗口为 `ViewportId::ROOT`。
+    pub viewport_id: egui::ViewportId,
+    /// 当前窗口实际使用的动画帧率档位。
+    pub current_rate: model::AnimationRate,
+}
+
+impl ViewState {
+    fn from_app(app: &App) -> Self {
+        Self {
+            w: app.w,
+            h: app.h,
+            open: app.open,
+            hover_since: app.hover_since,
+            leave_since: app.leave_since,
+            hover_lock: app.hover_lock,
+            reveal: app.reveal,
+            drag_hot: app.drag_hot,
+            drag_a: app.drag_a,
+            drag_saved: app.drag_saved,
+            forced_open_until: app.forced_open_until,
+            wheel_delta: app.wheel_delta,
+            wheel_at: app.wheel_at,
+            wheel_page_at: app.wheel_page_at,
+            shelf_menu_rect: app.shelf_menu_rect,
+            last_cursor: app.last_cursor,
+            last_input: app.last_input,
+            last_t: app.last_t,
+            dt: app.dt,
+            cursor_local: app.cursor_local,
+            browser_at_top: app.browser_at_top,
+            browser_minimal_active: app.browser_minimal_active,
+            glass_tint: app.glass_tint,
+            screen: app.screen,
+            notice_width: app.notice_width,
+            notice_details: app.notice_details,
+            hud_notice: app.hud_notice.clone(),
+            hud_alpha: app.hud_alpha,
+            messenger_scroll: app.messenger_scroll,
+            pet_a: app.pet_a,
+            resident: app.resident.clone(),
+            fluid_origin: app.fluid_origin,
+            display_id: app.settings.display_id.clone(),
+            viewport_id: egui::ViewportId::ROOT,
+            current_rate: app.settings.animation_rate,
+        }
+    }
+
+    fn swap_with(&mut self, other: &mut Self) {
+        std::mem::swap(&mut self.w, &mut other.w);
+        std::mem::swap(&mut self.h, &mut other.h);
+        std::mem::swap(&mut self.open, &mut other.open);
+        std::mem::swap(&mut self.hover_since, &mut other.hover_since);
+        std::mem::swap(&mut self.leave_since, &mut other.leave_since);
+        std::mem::swap(&mut self.hover_lock, &mut other.hover_lock);
+        std::mem::swap(&mut self.reveal, &mut other.reveal);
+        std::mem::swap(&mut self.drag_hot, &mut other.drag_hot);
+        std::mem::swap(&mut self.drag_a, &mut other.drag_a);
+        std::mem::swap(&mut self.drag_saved, &mut other.drag_saved);
+        std::mem::swap(&mut self.forced_open_until, &mut other.forced_open_until);
+        std::mem::swap(&mut self.wheel_delta, &mut other.wheel_delta);
+        std::mem::swap(&mut self.wheel_at, &mut other.wheel_at);
+        std::mem::swap(&mut self.wheel_page_at, &mut other.wheel_page_at);
+        std::mem::swap(&mut self.shelf_menu_rect, &mut other.shelf_menu_rect);
+        std::mem::swap(&mut self.last_cursor, &mut other.last_cursor);
+        std::mem::swap(&mut self.last_input, &mut other.last_input);
+        std::mem::swap(&mut self.last_t, &mut other.last_t);
+        std::mem::swap(&mut self.dt, &mut other.dt);
+        std::mem::swap(&mut self.cursor_local, &mut other.cursor_local);
+        std::mem::swap(&mut self.browser_at_top, &mut other.browser_at_top);
+        std::mem::swap(&mut self.browser_minimal_active, &mut other.browser_minimal_active);
+        std::mem::swap(&mut self.glass_tint, &mut other.glass_tint);
+        std::mem::swap(&mut self.screen, &mut other.screen);
+        std::mem::swap(&mut self.notice_width, &mut other.notice_width);
+        std::mem::swap(&mut self.notice_details, &mut other.notice_details);
+        std::mem::swap(&mut self.hud_notice, &mut other.hud_notice);
+        std::mem::swap(&mut self.hud_alpha, &mut other.hud_alpha);
+        std::mem::swap(&mut self.messenger_scroll, &mut other.messenger_scroll);
+        std::mem::swap(&mut self.pet_a, &mut other.pet_a);
+        std::mem::swap(&mut self.resident, &mut other.resident);
+        std::mem::swap(&mut self.fluid_origin, &mut other.fluid_origin);
+        std::mem::swap(&mut self.display_id, &mut other.display_id);
+        std::mem::swap(&mut self.viewport_id, &mut other.viewport_id);
+        std::mem::swap(&mut self.current_rate, &mut other.current_rate);
+    }
+}
+
 pub struct App {
+    /// 当前渲染的窗口视图。界面方法通过 `Deref` 直接访问它。
+    pub view: ViewState,
+    /// 多屏模式下的其他窗口视图，键为稳定显示器 ID。
+    pub views: HashMap<String, ViewState>,
     pub opts: Options,
     pub settings: model::Settings,
     pub(crate) todos: model::TodoList,
     pub(crate) water: model::Water,
     pub(crate) shelf: model::Shelf,
-
-    // 形变
-    pub(crate) w: Spring,
-    pub(crate) h: Spring,
-    pub(crate) open: bool,
-    hover_since: Option<f64>,
-    leave_since: Option<f64>,
-    /// 前台切换导致的强制收起：光标离开前不再自动展开。
-    pub hover_lock: bool,
-    pub(crate) reveal: f32,
 
     // 切页
     pub(crate) page: usize,
@@ -652,19 +774,10 @@ pub struct App {
     page_t0: f64,
     slide: Spring,
     dots: [Spring; 8],
-    wheel_delta: f32,
-    wheel_at: f64,
-    wheel_page_at: f64,
-
-    // 拖入
-    pub(crate) drag_hot: bool,
-    pub(crate) drag_a: f32,
-    drag_saved: Option<usize>,
 
     // 置物架
     pub(crate) shelf_scroll: Spring,
     pub(crate) shelf_first: usize,
-    pub(crate) shelf_menu_rect: Option<Rect>,
     pub(crate) shelf_x: HashMap<PathBuf, Spring>,
     pub(crate) shelf_born: HashMap<PathBuf, f64>,
     pub(crate) icons: crate::icons::Cache,
@@ -708,20 +821,11 @@ pub struct App {
     pub(crate) media: NowPlaying,
     pub(crate) music_artwork: Option<(std::sync::Arc<egui::ColorImage>,egui::TextureHandle)>,
 
-    forced_open_until:f64,
     pub settings_open:bool,
     pub displays:Vec<crate::display_layout::Display>,
-    /// 当前实际应用帧率绑定的显示屏 ID；用于换屏时恢复该屏幕记住的档位。
-    rate_display_id:String,
-    browser_at_top:bool,
-    browser_minimal_active:bool,
-    /// 毛玻璃着色量（平滑过渡，避免背景变化时闪烁）；0 表示尚未初始化。
-    glass_tint:f32,
     pub(crate) fluid:crate::fluid::Fluid,
-    pub(crate) fluid_origin:Pos2,
     fluid_art:Option<egui::TextureId>,
     fluid_title:String,
-    screen:Option<Rect>,
     pub(crate) settings_focus_requested:bool,
     pub(crate) settings_tab:usize,
     pub(crate) settings_category:usize,
@@ -733,12 +837,7 @@ pub struct App {
     pub(crate) notification_bell_until: f64,
     pub(crate) notification_bell_at: f64,
     pub(crate) notice: Option<Alert>,
-    pub(crate) hud_notice: Option<Alert>,
-    hud_alpha: f32,
-    notice_width: Spring,
-    notice_details: bool,
     pub pending_messengers:Vec<Unread>,
-    messenger_scroll: f32,
     pub(crate) alerts: std::collections::VecDeque<Alert>,
     pub(crate) history: std::collections::VecDeque<Alert>,
     pub(crate) pending: Vec<Cmd>,
@@ -749,16 +848,10 @@ pub struct App {
     // 其它
     toast: Option<(String, f64)>,
     toast_below: bool,
-    last_input: f64,
     system_idle: Option<f64>,
-    last_cursor: Option<Pos2>,
-    pet_a: f32,
-    last_t: Option<f64>,
     pub(crate) t: f64,
-    pub(crate) dt: f32,
     pub(crate) today: String,
     pub(crate) current_hour: usize,
-    pub(crate) cursor_local: Option<Pos2>,
     started: bool,
     /// v0.5.4：音量条展示值（拖动时先用本地值，随后跟上系统回报）。
     pub(crate) volume_ui: Option<(u32, bool)>,
@@ -775,8 +868,16 @@ pub struct App {
     pub(crate) calendar: CalendarState,
     pub(crate) quota: crate::quota_ui::State,
     pub(crate) updates: crate::updates::State,
-    pub(crate) resident: bar::Motion,
     pub(crate) resident_power: (Option<u8>,bool),
+}
+
+impl Deref for App {
+    type Target = ViewState;
+    fn deref(&self) -> &Self::Target { &self.view }
+}
+
+impl DerefMut for App {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.view }
 }
 
 impl App {
@@ -797,33 +898,57 @@ impl App {
         let initial_lyrics=settings.lyrics_enabled;
         let initial_page=settings.page_order.iter().copied().find(|page|settings.visible_pages[*page]).unwrap_or(0);
         Self {
+            view: ViewState {
+                w: Spring::new(bw, CLOSE.0, CLOSE.1),
+                h: Spring::new(bh, CLOSE.0, CLOSE.1),
+                open: false,
+                hover_since: None,
+                leave_since: None,
+                hover_lock: false,
+                reveal: 0.0,
+                drag_hot: false,
+                drag_a: 0.0,
+                drag_saved: None,
+                forced_open_until: 0.0,
+                wheel_delta: 0.0,
+                wheel_at: -1.0,
+                wheel_page_at: -1.0,
+                shelf_menu_rect: None,
+                last_cursor: None,
+                last_input: 0.0,
+                last_t: None,
+                dt: 0.0,
+                cursor_local: None,
+                browser_at_top: false,
+                browser_minimal_active: false,
+                glass_tint: 0.0,
+                screen: None,
+                notice_width: Spring::new(0.0, CLOSE.0, CLOSE.1),
+                notice_details: false,
+                hud_notice: None,
+                hud_alpha: 0.0,
+                messenger_scroll: 0.0,
+                pet_a: 0.0,
+                resident: Default::default(),
+                fluid_origin: Pos2::ZERO,
+                display_id: settings.display_id.clone(),
+                viewport_id: egui::ViewportId::ROOT,
+                current_rate: settings.animation_rate,
+            },
+            views: HashMap::new(),
             opts,
             settings,
             todos: model::TodoList::load(),
             water: model::Water::default(),
             shelf: model::Shelf::load(),
-            w: Spring::new(bw, CLOSE.0, CLOSE.1),
-            h: Spring::new(bh, CLOSE.0, CLOSE.1),
-            open: false,
-            hover_since: None,
-            leave_since: None,
-            hover_lock: false,
-            reveal: 0.0,
             page: initial_page,
             page_from: initial_page,
             page_dir: 1.0,
             page_t0: -10.0,
             slide: Spring::new(0.0, 260.0, 0.92),
             dots: std::array::from_fn(|i| Spring::new(if i == initial_page { 16.0 } else { 4.0 }, 380.0, 0.86)),
-            wheel_delta: 0.0,
-            wheel_at: -1.0,
-            wheel_page_at: -1.0,
-            drag_hot: false,
-            drag_a: 0.0,
-            drag_saved: None,
             shelf_scroll: Spring::new(0.0, 300.0, 0.9),
             shelf_first: 0,
-            shelf_menu_rect: None,
             shelf_x: HashMap::new(),
             shelf_born: HashMap::new(),
             icons: Default::default(), avoidance: Default::default(),
@@ -855,19 +980,14 @@ impl App {
             media_anchor: (String::new(), 0.0, 0.0, false),
             media: NowPlaying::default(),
             music_artwork: None,
-            forced_open_until:0.0, settings_open:false, displays:Vec::new(), rate_display_id:String::new(), browser_at_top:false, browser_minimal_active:false, glass_tint:0.0, fluid:Default::default(), fluid_origin:Pos2::ZERO, fluid_art:None, fluid_title:String::new(), screen:None, settings_focus_requested:false, settings_tab:0, settings_category:0, wechat_status:String::new(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
+            settings_open:false, displays:Vec::new(), fluid:Default::default(), fluid_art:None, fluid_title:String::new(), settings_focus_requested:false, settings_tab:0, settings_category:0, wechat_status:String::new(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
             listener_status: "尚未连接".into(),
-            notification_bell_until: 0.0, notification_bell_at: -10.0, notice: None, hud_notice: None, hud_alpha: 0.0, notice_width:Spring::new(0.0,CLOSE.0,CLOSE.1), notice_details:false, pending_messengers:Vec::new(), messenger_scroll:0.0, alerts: Default::default(), history: Default::default(), pending: vec![],
+            notification_bell_until: 0.0, notification_bell_at: -10.0, notice: None, pending_messengers:Vec::new(), alerts: Default::default(), history: Default::default(), pending: vec![],
             todo_first: 0, todo_choosing: false, pet: Default::default(), last_drink: None,
             toast: None, toast_below: false,
-            last_input: 0.0, system_idle: None,
-            last_cursor: None,
-            pet_a: 0.0,
-            last_t: None,
+            system_idle: None,
             t: 0.0,
-            dt: 0.0,
             today: String::new(), current_hour: 0,
-            cursor_local: None,
             started: false,
             volume_ui: None,
             volume_quiet_until: 0.0,
@@ -878,7 +998,7 @@ impl App {
             calendar: CalendarState::load(),
             quota: crate::quota_ui::State::load(),
             updates: Default::default(),
-            resident: Default::default(), resident_power:(None,false),
+            resident_power:(None,false),
         }
     }
 
@@ -1393,6 +1513,14 @@ impl App {
         if self.adding && self.buf.trim().is_empty(){self.cancel_edit();}
     }
 
+    /// 前台切换时所有岛一起进入“不要自动展开”状态。
+    pub fn foreground_changed_all(&mut self) {
+        self.foreground_changed();
+        for view in self.views.values_mut() {
+            view.hover_lock = true;
+        }
+    }
+
     /// 带过渡地切到某页。`dir` > 0 表示内容从右侧进入。
     pub(crate) fn go(&mut self, page: usize, dir: f32) {
         if page == self.page || !self.settings.visible_pages[page] { return; }
@@ -1510,25 +1638,21 @@ impl App {
     /// 切到某块屏幕时，恢复它记住的档位；第一次见到这块屏幕则沿用当前档位并建立绑定。
     pub(crate) fn apply_display_animation_rate(&mut self) {
         let Some(display_id) = self.selected_display_id() else { return; };
-        self.rate_display_id = display_id.clone();
-        if let Some(rate) = self.settings.display_rate(&display_id) {
-            self.settings.animation_rate = rate;
-        } else {
-            self.settings.set_display_rate(&display_id, self.settings.animation_rate);
+        self.display_id = display_id.clone();
+        let rate = self.settings.display_rate(&display_id).unwrap_or(self.settings.animation_rate);
+        self.current_rate = rate;
+        self.settings.animation_rate = rate;
+        if self.settings.display_rate(&display_id).is_none() {
+            self.settings.set_display_rate(&display_id, rate);
         }
     }
 
     /// 用户改动画档位时，把当前档位绑定到当前屏幕。
     pub(crate) fn bind_display_animation_rate(&mut self) {
-        if let Some(display_id) = self.selected_display_id() {
+        let display_id = if self.display_id.is_empty() { self.selected_display_id() } else { Some(self.display_id.clone()) };
+        if let Some(display_id) = display_id {
             self.settings.set_display_rate(&display_id, self.settings.animation_rate);
-        }
-    }
-
-    /// 启动、换屏、主屏变化或显示器热插拔后，同步到实际屏幕的绑定档位。
-    fn sync_display_animation_rate(&mut self) {
-        if self.selected_display_id().is_some_and(|display_id| display_id != self.rate_display_id) {
-            self.apply_display_animation_rate();
+            if display_id == self.display_id { self.current_rate = self.settings.animation_rate; }
         }
     }
 
@@ -1568,8 +1692,59 @@ impl App {
     // 每帧入口
     // ---------------------------------------------------------------
     pub fn frame(&mut self, ui: &mut egui::Ui, win: Rect, env: &Env) -> FrameOut {
+        self.frame_with(true, ui, win, env)
+    }
+
+    /// 用指定显示器对应的独立视图绘制一帧；共享状态只在 `frame()`（主视图）里推进。
+    pub fn frame_view(&mut self, display_id: &str, ui: &mut egui::Ui, win: Rect, env: &Env) -> FrameOut {
+        let mut view = self.views.remove(display_id).unwrap_or_else(|| {
+            let mut view = self.view.clone();
+            view.display_id = display_id.to_string();
+            view.open = false;
+            view.hover_since = None;
+            view.leave_since = None;
+            view.hover_lock = false;
+            view.reveal = 0.0;
+            view.drag_hot = false;
+            view.drag_a = 0.0;
+            view.forced_open_until = 0.0;
+            view
+        });
+        std::mem::swap(&mut self.view, &mut view);
+        let out = self.frame_with(false, ui, win, env);
+        std::mem::swap(&mut self.view, &mut view);
+        self.views.insert(display_id.to_string(), view);
+        out
+    }
+
+    /// 创建/更新一个显示器的视图状态；已经存在时保留它的展开/悬停状态。
+    pub fn ensure_view(&mut self, display_id: &str, viewport_id: egui::ViewportId, rate: model::AnimationRate) {
+        let (bw, bh) = self.base_size();
+        let mut view = self.views.remove(display_id).unwrap_or_else(|| {
+            let mut view = self.view.clone();
+            view.display_id = display_id.to_string();
+            view.open = false;
+            view.hover_since = None;
+            view.leave_since = None;
+            view.hover_lock = false;
+            view.reveal = 0.0;
+            view.drag_hot = false;
+            view.drag_a = 0.0;
+            view.forced_open_until = 0.0;
+            view.w = Spring::new(bw, CLOSE.0, CLOSE.1);
+            view.h = Spring::new(bh, CLOSE.0, CLOSE.1);
+            view.notice_width = Spring::new(0.0, CLOSE.0, CLOSE.1);
+            view.pet_a = 0.0;
+            view
+        });
+        view.display_id = display_id.to_string();
+        view.viewport_id = viewport_id;
+        view.current_rate = rate;
+        self.views.insert(display_id.to_string(), view);
+    }
+
+    fn frame_with(&mut self, advance_shared: bool, ui: &mut egui::Ui, win: Rect, env: &Env) -> FrameOut {
         let ctx = ui.ctx().clone();
-        self.sync_display_animation_rate();
         let dt = match self.last_t {
             Some(t0) => (env.t - t0).clamp(0.0, 0.1) as f32,
             None => 0.0,
@@ -1577,10 +1752,10 @@ impl App {
         let elapsed = self.last_t.map(|at| (env.t - at).max(0.0) as f32).unwrap_or(0.0);
         self.last_t = Some(env.t);
         self.t = env.t;
-        self.quota_tick();
         self.current_hour=env.hour();
         self.system_idle=env.idle_seconds;
         self.dt = dt;
+        if advance_shared { self.quota_tick(); }
         if let Some(at_top)=env.browser_at_top {self.browser_at_top=at_top;}
         self.screen=env.screen;
         if self.settings.skin.is_glass() {
@@ -1605,9 +1780,11 @@ impl App {
         }
         let mut cmds = Vec::new();
 
-        self.tick(env, dt, elapsed);
-        self.sync_device(env);
-        self.tick_alerts();
+        if advance_shared {
+            self.tick(env, dt, elapsed);
+            self.sync_device(env);
+            self.tick_alerts();
+        }
         let hud_active=self.notice.clone();
         if hud_active.as_ref().map(|a|&a.title)!=self.hud_notice.as_ref().map(|a|&a.title)||hud_active.is_none(){self.notice_details=false;}
         if let Some(a)=&hud_active {self.hud_notice=Some(a.clone());}
@@ -1616,7 +1793,7 @@ impl App {
         let notice_target=if !self.notice.as_ref().is_some_and(|a|a.messenger().is_some()) && self.compact_notices()&&(self.notice.is_some()||self.t<self.notification_bell_until) {44.0}else{0.0};
         self.notice_width.target=notice_target;
         if self.compact_notices(){self.notice_width.step(dt);}else{self.notice_width.snap(0.0);self.notice_details=false;}
-        self.update_media(env,&ctx);
+        if advance_shared { self.update_media(env,&ctx); }
         let bell=self.t<self.notification_bell_until&&!self.compact_notices();
         self.resident_power=(env.battery,env.charging);
         let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled());
@@ -1628,7 +1805,7 @@ impl App {
             else if self.island_lyrics_active() {layout.x[bar::PET]=Some(60.0-self.lyric_bar_width()/2.0);}
         }
         self.resident.step(layout,dt,ctx.style().animation_time>0.0&&bar::animations_enabled());
-        if self.opts.fetch_lyrics {
+        if advance_shared && self.opts.fetch_lyrics {
             self.poll_lyrics();
         }
         self.update_island_lyric_layout(&ctx);
@@ -1732,8 +1909,8 @@ impl App {
             }
         } else {self.wheel_delta=0.0;}
         let want = (inside && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
-        self.morph(want, inside, env.t, dt);
-        self.update_pet(env, cx);
+        self.morph(want, inside, env.t, dt, advance_shared);
+        self.update_pet(env, cx, advance_shared);
 
         // ---------- 绘制 ----------
         let p = self.progress();
@@ -1782,9 +1959,11 @@ impl App {
                 self.fluid_art=art;
                 self.fluid_title.clone_from(&self.media.title);
             }
-            self.fluid.set_cursor(env.cursor.filter(|p|body.contains(*p)).map(|p|(p.x-body.left(),p.y-body.top())));
-            if !self.open || self.page!=0 || self.media.title.is_empty(){self.fluid.set_seek(None,0.0);}
-            self.fluid.advance(env.t,dt);
+            if advance_shared {
+                self.fluid.set_cursor(env.cursor.filter(|p|body.contains(*p)).map(|p|(p.x-body.left(),p.y-body.top())));
+                if !self.open || self.page!=0 || self.media.title.is_empty(){self.fluid.set_seek(None,0.0);}
+                self.fluid.advance(env.t,dt);
+            }
         }
         self.paint_body(&painter, body, flare, flare_h, radius, feather);
         let content_from=crate::skin_paint::shape_count(&ctx,layer);
@@ -1967,8 +2146,8 @@ impl App {
             || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
         let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
         // 交互形变、媒体和宠物按档位分级刷新；静态界面每秒核对提醒。
-        let repaint_after=repaint_interval(self.settings.animation_rate,transitioning,ambient,pet_visible,self.pet.state==PetState::Sleeping);
-        cmds.append(&mut self.pending);
+        let repaint_after=repaint_interval(self.current_rate,transitioning,ambient,pet_visible,self.pet.state==PetState::Sleeping);
+        if advance_shared { cmds.append(&mut self.pending); }
         FrameOut {
             region: rel(floating_toast.into_iter().chain(self.shelf_menu_rect.map(|r|r.union(r + ctx.style().visuals.popup_shadow.margin()).expand(1.0 / ctx.pixels_per_point()))).fold(region,Rect::union).intersect(ui.max_rect())),
             glass: glass_region,
@@ -2254,7 +2433,7 @@ impl App {
     }
 
     /// 悬停状态机：意图缓冲 → 弹簧展开 → 离开延迟 → 临界阻尼收起；全程可打断。
-    fn morph(&mut self, want: bool, inside: bool, t: f64, dt: f32) {
+    fn morph(&mut self, want: bool, inside: bool, t: f64, dt: f32, advance_shared: bool) {
         let (bw, bh) = self.base_size();
         if want {
             self.leave_since = None;
@@ -2310,10 +2489,12 @@ impl App {
             if prev_w>=bw && self.w.pos<bw {self.w.snap(bw);}
             if prev_h>=bh && self.h.pos<bh {self.h.snap(bh);}
         }
-        for d in &mut self.dots {
-            d.step(dt);
+        if advance_shared {
+            for d in &mut self.dots {
+                d.step(dt);
+            }
+            self.slide.step(dt);
         }
-        self.slide.step(dt);
     }
 
     // ---------------------------------------------------------------
@@ -2435,27 +2616,31 @@ impl App {
         if reveal>0.004 {self.shared_header(&base.faded(reveal),base.origin.x+PW/2.0,1.0,reveal,env);}
     }
 
-    fn update_pet(&mut self, env: &Env, cx: f32) {
+    fn update_pet(&mut self, env: &Env, cx: f32, advance_shared: bool) {
         let cx=cx+self.resident.position(bar::PET);
         let idle = self.idle_for();
-        if self.pet.last_idle >= self.opts.pet_idle && idle < 1.0
-            && matches!(self.pet.state, PetState::Dozing | PetState::Sleeping) {
-            self.pet.waking_until = self.t + 2.2;
+        if advance_shared {
+            if self.pet.last_idle >= self.opts.pet_idle && idle < 1.0
+                && matches!(self.pet.state, PetState::Dozing | PetState::Sleeping) {
+                self.pet.waking_until = self.t + 2.2;
+            }
+            self.pet.last_idle = idle;
+            self.pet.hovered = env.cursor.is_some_and(|p| (p.x-cx).abs() <= BAR_W/2.0+24.0 && (0.0..70.0).contains(&p.y));
+            self.pet.worried = self.settings.show_battery && env.battery.is_some_and(|v|v<=20) && !env.charging || env.network == Some(false);
         }
-        self.pet.last_idle = idle;
-        self.pet.hovered = env.cursor.is_some_and(|p| (p.x-cx).abs() <= BAR_W/2.0+24.0 && (0.0..70.0).contains(&p.y));
-        self.pet.worried = self.settings.show_battery && env.battery.is_some_and(|v|v<=20) && !env.charging || env.network == Some(false);
         let allowed = self.pet_enabled();
-        if !allowed { self.pet.reaction = None; self.pet.waking_until = 0.0; self.pet.expressions.clear(); }
+        if advance_shared && !allowed { self.pet.reaction = None; self.pet.waking_until = 0.0; self.pet.expressions.clear(); }
         let available = allowed && !self.open && !self.drag_hot;
         let shown = available;
         self.pet_a = anim::approach(self.pet_a, if shown {1.0}else{0.0}, 9.0, self.dt);
         let visible = available && self.pet_a > 0.7 && self.progress() < 0.1;
-        self.pet.advance(self.dt, visible);
-        let state = self.pet_state();
-        let gaze = env.cursor.map(|p| [((p.x-cx)/28.0).clamp(-3.0,3.0), ((p.y-15.0)/40.0).clamp(-1.0,1.5)])
-            .unwrap_or([(self.t as f32 * 0.35).sin()*0.8, 0.0]);
-        self.pet.step(state, self.t, self.dt, gaze, visible);
+        if advance_shared {
+            self.pet.advance(self.dt, visible);
+            let state = self.pet_state();
+            let gaze = env.cursor.map(|p| [((p.x-cx)/28.0).clamp(-3.0,3.0), ((p.y-15.0)/40.0).clamp(-1.0,1.5)])
+                .unwrap_or([(self.t as f32 * 0.35).sin()*0.8, 0.0]);
+            self.pet.step(state, self.t, self.dt, gaze, visible);
+        }
     }
 
     // ---------------------------------------------------------------

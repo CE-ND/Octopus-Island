@@ -77,6 +77,22 @@ fn display_switch_restores_bound_animation_rate_and_persists(){
 }
 
 #[test]
+fn per_display_views_keep_open_state_independent_while_settings_stay_shared(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    let a=egui::ViewportId::from_hash_of("display-a");
+    let b=egui::ViewportId::from_hash_of("display-b");
+    h.app.ensure_view("display-a",a,crate::model::AnimationRate::HighRefresh);
+    h.app.ensure_view("display-b",b,crate::model::AnimationRate::HighRefresh180);
+    if let Some(view)=h.app.views.get_mut("display-a"){view.open=true;view.w.target=PW;}
+    assert!(h.app.views["display-a"].open);
+    assert!(!h.app.views["display-b"].open,"另一块屏不能被一起展开");
+    assert_eq!(h.app.views["display-a"].current_rate,crate::model::AnimationRate::HighRefresh);
+    assert_eq!(h.app.views["display-b"].current_rate,crate::model::AnimationRate::HighRefresh180);
+    h.app.settings.skin=crate::model::Skin::GlassDark;
+    assert_eq!(h.app.settings.skin,crate::model::Skin::GlassDark,"设置仍然共用一份");
+}
+
+#[test]
 fn focus_durations_support_direct_input_and_keep_the_current_timer(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.app.open_settings_category(2);h.hover(H::local(200.0,60.0),1.0);

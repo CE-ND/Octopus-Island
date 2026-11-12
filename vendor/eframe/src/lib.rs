@@ -160,6 +160,44 @@ pub use epi::*;
 
 pub(crate) mod stopwatch;
 
+/// 原生窗口句柄登记表（仅 Windows）。
+///
+/// egui 的 viewport 回调只拿得到 `egui::Context`，拿不到各自的原生窗口句柄；
+/// 本项目的岛体窗口需要给每个 HWND 安装 Win32 子类、命中区和模糊层，因此
+/// 在 eframe 创建每个 viewport 窗口时登记 HWND，供应用层按 viewport 查询。
+#[cfg(target_os = "windows")]
+pub(crate) mod viewport_windows {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static HANDLES: OnceLock<Mutex<HashMap<egui::ViewportId, isize>>> = OnceLock::new();
+
+    pub(crate) fn handles() -> &'static Mutex<HashMap<egui::ViewportId, isize>> {
+        HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    pub(crate) fn register(id: egui::ViewportId, hwnd: isize) {
+        handles().lock().unwrap_or_else(|e| e.into_inner()).insert(id, hwnd);
+    }
+
+    pub(crate) fn unregister(id: egui::ViewportId) {
+        handles().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    }
+}
+
+/// 返回某个 viewport 对应的原生 Win32 窗口句柄（仅 Windows）。
+///
+/// 这是 eframe 的扩展接口：root viewport 和 `show_viewport_deferred` /
+/// `show_viewport_immediate` 创建的子窗口都会在创建时登记。
+#[cfg(target_os = "windows")]
+pub fn viewport_hwnd(id: egui::ViewportId) -> Option<isize> {
+    viewport_windows::handles()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&id)
+        .copied()
+}
+
 // ----------------------------------------------------------------------------
 // When compiling for web
 
