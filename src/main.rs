@@ -289,8 +289,9 @@ impl eframe::App for Shell {
         #[cfg(windows)] eframe::set_root_viewport_scale(self.app.settings.island_scale());
         #[cfg(windows)]
         {
-            // 用帧间隔限制刷新，绕过部分 Intel 驱动在垂直同步中的忙等待。
-            let delay=Duration::from_secs_f64(1.0/60.0).saturating_sub(self.frame_at.elapsed());
+            // 用帧间隔限制刷新，绕过部分 Intel 驱动在垂直同步中的忙等待；上限跟随动画档位。
+            let max_fps=self.app.settings.animation_rate.max_fps() as f64;
+            let delay=Duration::from_secs_f64(1.0/max_fps).saturating_sub(self.frame_at.elapsed());
             if !delay.is_zero(){std::thread::sleep(delay);}
             self.frame_at=Instant::now();
         }
@@ -637,7 +638,7 @@ mod repaint_tests {
 
     #[test]
     fn background_repaint_keeps_the_requested_frame_interval(){
-        for fps in [60.0,30.0,20.0,10.0,1.0] {
+        for fps in [180.0,144.0,120.0,60.0,30.0,20.0,15.0,10.0,1.0] {
             let interval=Duration::from_secs_f64(1.0/fps);
             let actual=scheduled_delay(interval,false);
             assert!(actual.abs_diff(interval)<Duration::from_micros(1),"目标 {fps} 帧不应被提前唤醒：{actual:?}");

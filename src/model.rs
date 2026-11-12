@@ -169,45 +169,90 @@ impl Dock {
     pub fn is_side(self) -> bool { self != Self::Top }
 }
 
-/// 动画刷新档位：标准保持原有节奏，省电降低各场景帧率以换取更低占用。
+/// 动画刷新档位：省电降低帧率换取更低占用，流畅提高帧率换取更顺滑的画面。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AnimationRate {
     PowerSaver,
     #[default]
     Standard,
+    HighRefresh,
+    HighRefresh144,
+    HighRefresh180,
 }
 
 impl AnimationRate {
-    pub const ALL: [AnimationRate; 2] = [Self::PowerSaver, Self::Standard];
+    pub const ALL: [AnimationRate; 5] = [Self::PowerSaver, Self::Standard, Self::HighRefresh, Self::HighRefresh144, Self::HighRefresh180];
 
     pub fn key(self) -> &'static str {
-        match self { Self::PowerSaver => "power_saver", Self::Standard => "standard" }
+        match self {
+            Self::PowerSaver => "power_saver",
+            Self::Standard => "standard",
+            Self::HighRefresh => "high_refresh",
+            Self::HighRefresh144 => "high_refresh_144",
+            Self::HighRefresh180 => "high_refresh_180",
+        }
     }
     pub fn parse(value: &str) -> Self {
-        match value { "power_saver" | "saver" => Self::PowerSaver, _ => Self::Standard }
+        match value {
+            "power_saver" | "saver" => Self::PowerSaver,
+            "high_refresh" | "high" => Self::HighRefresh,
+            "high_refresh_144" | "high_144" => Self::HighRefresh144,
+            "high_refresh_180" | "high_180" => Self::HighRefresh180,
+            _ => Self::Standard,
+        }
     }
     pub fn label(self) -> &'static str {
-        match self { Self::PowerSaver => "省电 30", Self::Standard => "标准 60" }
+        match self {
+            Self::PowerSaver => "省电 30",
+            Self::Standard => "标准 60",
+            Self::HighRefresh => "流畅 120",
+            Self::HighRefresh144 => "流畅 144",
+            Self::HighRefresh180 => "流畅 180",
+        }
     }
     pub fn description(self) -> &'static str {
         match self {
             Self::PowerSaver => "交互动画 30 帧、氛围动画 20 帧、桌宠 15 帧；更省电，动画速度和轨迹不变。",
             Self::Standard => "交互动画 60 帧、氛围动画 30 帧、桌宠 20 帧；画面更顺滑，默认档。",
+            Self::HighRefresh => "交互动画 120 帧、氛围动画 60 帧、桌宠 30 帧；固定档位，不检查显示器刷新率。",
+            Self::HighRefresh144 => "交互动画 144 帧、氛围动画 60 帧、桌宠 30 帧；固定档位，不检查显示器刷新率。",
+            Self::HighRefresh180 => "交互动画 180 帧、氛围动画 60 帧、桌宠 30 帧；固定档位，不检查显示器刷新率。",
+        }
+    }
+    /// 主循环允许的最高帧率：限制每个场景的刷新上限，避免空转。
+    pub fn max_fps(self) -> u32 {
+        match self {
+            Self::PowerSaver => 30,
+            Self::Standard => 60,
+            Self::HighRefresh => 120,
+            Self::HighRefresh144 => 144,
+            Self::HighRefresh180 => 180,
         }
     }
     /// 交互动画（展开、收起、翻页、拖拽等）的刷新间隔，秒。
     pub fn transition_interval(self) -> f64 {
-        match self { Self::PowerSaver => 1.0 / 30.0, Self::Standard => 1.0 / 60.0 }
+        match self {
+            Self::PowerSaver => 1.0 / 30.0,
+            Self::Standard => 1.0 / 60.0,
+            Self::HighRefresh => 1.0 / 120.0,
+            Self::HighRefresh144 => 1.0 / 144.0,
+            Self::HighRefresh180 => 1.0 / 180.0,
+        }
     }
     /// 氛围动画（流体皮肤、番茄钟、音乐、会议提醒）的刷新间隔，秒。
     pub fn ambient_interval(self) -> f64 {
-        match self { Self::PowerSaver => 1.0 / 20.0, Self::Standard => 1.0 / 30.0 }
+        match self {
+            Self::PowerSaver => 1.0 / 20.0,
+            Self::Standard => 1.0 / 30.0,
+            Self::HighRefresh | Self::HighRefresh144 | Self::HighRefresh180 => 1.0 / 60.0,
+        }
     }
-    /// 桌宠刷新间隔，秒；睡眠时两档都保持 10 帧。
+    /// 桌宠刷新间隔，秒；睡眠时统一保持 10 帧。
     pub fn pet_interval(self, sleeping: bool) -> f64 {
         match (self, sleeping) {
             (Self::PowerSaver, false) => 1.0 / 15.0,
             (Self::Standard, false) => 0.05,
+            (Self::HighRefresh | Self::HighRefresh144 | Self::HighRefresh180, false) => 1.0 / 30.0,
             (_, true) => 0.1,
         }
     }
@@ -238,6 +283,8 @@ pub struct Settings {
     pub dock: Dock,
     /// 动画刷新档位：省电 30 / 标准 60。
     pub animation_rate: AnimationRate,
+    /// 每块显示屏记住的动画档位，键为显示器稳定 ID。
+    pub display_rates: Vec<(String, AnimationRate)>,
     pub settings_theme: crate::settings_theme::SettingsTheme,
     pub pet: bool,
     pub minimal: bool,
@@ -288,7 +335,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, animation_rate: AnimationRate::Standard, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 8], page_order: [0,1,2,3,4,5,6,7], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true }
+        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, animation_rate: AnimationRate::Standard, display_rates: Vec::new(), settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 8], page_order: [0,1,2,3,4,5,6,7], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true }
     }
 }
 
@@ -301,6 +348,22 @@ impl Settings {
     /// 水平位置，-1..=1。
     pub fn island_offset_ratio(&self) -> f32 {
         self.island_offset.clamp(-ISLAND_OFFSET_MAX, ISLAND_OFFSET_MAX) as f32 / ISLAND_OFFSET_MAX as f32
+    }
+
+    /// 取某块显示屏记住的动画档位；空 ID 表示“跟随主屏”，由调用方解析实际屏幕。
+    pub fn display_rate(&self, display_id: &str) -> Option<AnimationRate> {
+        if display_id.is_empty() { return None; }
+        self.display_rates.iter().rev().find(|(id, _)| id == display_id).map(|(_, rate)| *rate)
+    }
+
+    /// 把动画档位绑定到某块显示屏；同一块屏只保留一条记录。
+    pub fn set_display_rate(&mut self, display_id: &str, rate: AnimationRate) {
+        if display_id.is_empty() { return; }
+        if let Some((_, current)) = self.display_rates.iter_mut().find(|(id, _)| id == display_id) {
+            *current = rate;
+        } else {
+            self.display_rates.push((display_id.to_string(), rate));
+        }
     }
 
     pub fn clock_text(&self, clock: &str) -> String {
@@ -330,6 +393,14 @@ impl Settings {
                 "island_shape" => s.island_shape = IslandShape::parse(&v),
                 "dock" => s.dock = Dock::parse(&v),
                 "animation_rate" => s.animation_rate = AnimationRate::parse(&v),
+                "display_rates" => {
+                    if let Ok(entries) = serde_json::from_str::<Vec<(String, String)>>(&v) {
+                        s.display_rates = entries.into_iter()
+                            .filter(|(id, _)| !id.is_empty())
+                            .map(|(id, key)| (id, AnimationRate::parse(&key)))
+                            .collect();
+                    }
+                }
                 "glass_blur" => s.glass_blur = v != "0",
                 "island_size" => s.island_size = island_size_value(v.parse::<u32>().unwrap_or(100)),
                 "island_offset" => s.island_offset = v.parse::<i32>().unwrap_or(0).clamp(-ISLAND_OFFSET_MAX, ISLAND_OFFSET_MAX),
@@ -389,6 +460,13 @@ impl Settings {
             }
         }
         if !s.visible_pages.contains(&true) { s.visible_pages[0]=true; }
+        // 旧版本只有全局 animation_rate：升级后把当前屏幕的档位补成它的绑定。
+        if s.display_rates.is_empty() && !s.display_id.is_empty() {
+            s.display_rates.push((s.display_id.clone(), s.animation_rate));
+        }
+        if let Some(rate) = s.display_rate(&s.display_id) {
+            s.animation_rate = rate;
+        }
         s
     }
 
@@ -401,6 +479,7 @@ impl Settings {
                 ("island_shape".into(),self.island_shape.key().into()),
                 ("dock".into(),self.dock.key().into()),
                 ("animation_rate".into(),self.animation_rate.key().into()),
+                ("display_rates".into(), serde_json::to_string(&self.display_rates.iter().map(|(id, rate)| (id.clone(), rate.key().to_string())).collect::<Vec<_>>()).unwrap_or_default()),
                 ("glass_blur".into(),(self.glass_blur as u8).to_string()),
                 ("island_size".into(),island_size_value(self.island_size).to_string()),
                 ("island_offset".into(),self.island_offset.clamp(-ISLAND_OFFSET_MAX,ISLAND_OFFSET_MAX).to_string()),
@@ -840,9 +919,37 @@ mod tests {
         for rate in AnimationRate::ALL { assert_eq!(AnimationRate::parse(rate.key()), rate); }
         assert_eq!(AnimationRate::parse("unknown"), AnimationRate::Standard);
         assert!(AnimationRate::PowerSaver.transition_interval() > AnimationRate::Standard.transition_interval());
+        assert!(AnimationRate::Standard.transition_interval() > AnimationRate::HighRefresh.transition_interval());
+        assert!(AnimationRate::HighRefresh.transition_interval() > AnimationRate::HighRefresh144.transition_interval());
+        assert!(AnimationRate::HighRefresh144.transition_interval() > AnimationRate::HighRefresh180.transition_interval());
         assert!(AnimationRate::PowerSaver.ambient_interval() > AnimationRate::Standard.ambient_interval());
+        assert!(AnimationRate::Standard.ambient_interval() > AnimationRate::HighRefresh.ambient_interval());
+        assert_eq!(AnimationRate::HighRefresh.ambient_interval(), AnimationRate::HighRefresh144.ambient_interval());
+        assert_eq!(AnimationRate::HighRefresh144.ambient_interval(), AnimationRate::HighRefresh180.ambient_interval());
         assert!(AnimationRate::PowerSaver.pet_interval(false) > AnimationRate::Standard.pet_interval(false));
+        assert!(AnimationRate::Standard.pet_interval(false) > AnimationRate::HighRefresh.pet_interval(false));
+        assert_eq!(AnimationRate::HighRefresh.pet_interval(false), AnimationRate::HighRefresh144.pet_interval(false));
+        assert_eq!(AnimationRate::HighRefresh144.pet_interval(false), AnimationRate::HighRefresh180.pet_interval(false));
         assert_eq!(AnimationRate::PowerSaver.pet_interval(true), AnimationRate::Standard.pet_interval(true));
+        assert_eq!(AnimationRate::HighRefresh.pet_interval(true), AnimationRate::Standard.pet_interval(true));
+        assert_eq!(AnimationRate::HighRefresh.max_fps(), 120);
+        assert_eq!(AnimationRate::HighRefresh144.max_fps(), 144);
+        assert_eq!(AnimationRate::HighRefresh180.max_fps(), 180);
+    }
+
+    #[test]
+    fn display_rates_are_kept_per_stable_display_id() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.display_rate(""), None);
+        settings.set_display_rate("", AnimationRate::HighRefresh180);
+        assert!(settings.display_rates.is_empty(), "跟随主屏不能写成空 ID 记录");
+        settings.set_display_rate("display-a", AnimationRate::HighRefresh);
+        settings.set_display_rate("display-b", AnimationRate::HighRefresh180);
+        settings.set_display_rate("display-a", AnimationRate::HighRefresh144);
+        assert_eq!(settings.display_rate("display-a"), Some(AnimationRate::HighRefresh144));
+        assert_eq!(settings.display_rate("display-b"), Some(AnimationRate::HighRefresh180));
+        assert_eq!(settings.display_rate("display-c"), None);
+        assert_eq!(settings.display_rates.len(), 2, "同一块屏幕只保留一条绑定");
     }
 
     #[test]

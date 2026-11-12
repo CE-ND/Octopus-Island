@@ -408,16 +408,29 @@ mod repaint_rate_tests {
 
     #[test]
     fn power_saver_reduces_animation_without_slowing_idle_checks() {
-        use model::AnimationRate::{PowerSaver, Standard};
+        use model::AnimationRate::{HighRefresh, HighRefresh144, HighRefresh180, PowerSaver, Standard};
         assert_eq!(repaint_interval(Standard, true, false, false, false), std::time::Duration::from_secs_f64(1.0 / 60.0));
         assert_eq!(repaint_interval(Standard, false, true, false, false), std::time::Duration::from_secs_f64(1.0 / 30.0));
         assert_eq!(repaint_interval(Standard, false, false, true, false), std::time::Duration::from_secs_f64(0.05));
         assert_eq!(repaint_interval(Standard, false, false, true, true), std::time::Duration::from_secs_f64(0.1));
+        assert_eq!(repaint_interval(HighRefresh, true, false, false, false), std::time::Duration::from_secs_f64(1.0 / 120.0));
+        assert_eq!(repaint_interval(HighRefresh, false, true, false, false), std::time::Duration::from_secs_f64(1.0 / 60.0));
+        assert_eq!(repaint_interval(HighRefresh, false, false, true, false), std::time::Duration::from_secs_f64(1.0 / 30.0));
+        assert_eq!(repaint_interval(HighRefresh144, true, false, false, false), std::time::Duration::from_secs_f64(1.0 / 144.0));
+        assert_eq!(repaint_interval(HighRefresh180, true, false, false, false), std::time::Duration::from_secs_f64(1.0 / 180.0));
+        assert_eq!(repaint_interval(HighRefresh144, false, true, false, false), repaint_interval(HighRefresh, false, true, false, false));
+        assert_eq!(repaint_interval(HighRefresh180, false, false, true, false), repaint_interval(HighRefresh, false, false, true, false));
         assert!(repaint_interval(PowerSaver, true, false, false, false) > repaint_interval(Standard, true, false, false, false));
+        assert!(repaint_interval(Standard, true, false, false, false) > repaint_interval(HighRefresh, true, false, false, false));
+        assert!(repaint_interval(HighRefresh, true, false, false, false) > repaint_interval(HighRefresh144, true, false, false, false));
+        assert!(repaint_interval(HighRefresh144, true, false, false, false) > repaint_interval(HighRefresh180, true, false, false, false));
         assert!(repaint_interval(PowerSaver, false, true, false, false) > repaint_interval(Standard, false, true, false, false));
         assert!(repaint_interval(PowerSaver, false, false, true, false) > repaint_interval(Standard, false, false, true, false));
         assert_eq!(repaint_interval(PowerSaver, false, false, false, false), std::time::Duration::from_secs(1));
         assert_eq!(repaint_interval(Standard, false, false, false, false), std::time::Duration::from_secs(1));
+        assert_eq!(repaint_interval(HighRefresh, false, false, false, false), std::time::Duration::from_secs(1));
+        assert_eq!(repaint_interval(HighRefresh144, false, false, false, false), std::time::Duration::from_secs(1));
+        assert_eq!(repaint_interval(HighRefresh180, false, false, false, false), std::time::Duration::from_secs(1));
     }
 }
 
@@ -698,6 +711,8 @@ pub struct App {
     forced_open_until:f64,
     pub settings_open:bool,
     pub displays:Vec<crate::display_layout::Display>,
+    /// 当前实际应用帧率绑定的显示屏 ID；用于换屏时恢复该屏幕记住的档位。
+    rate_display_id:String,
     browser_at_top:bool,
     browser_minimal_active:bool,
     /// 毛玻璃着色量（平滑过渡，避免背景变化时闪烁）；0 表示尚未初始化。
@@ -840,7 +855,7 @@ impl App {
             media_anchor: (String::new(), 0.0, 0.0, false),
             media: NowPlaying::default(),
             music_artwork: None,
-            forced_open_until:0.0, settings_open:false, displays:Vec::new(), browser_at_top:false, browser_minimal_active:false, glass_tint:0.0, fluid:Default::default(), fluid_origin:Pos2::ZERO, fluid_art:None, fluid_title:String::new(), screen:None, settings_focus_requested:false, settings_tab:0, settings_category:0, wechat_status:String::new(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
+            forced_open_until:0.0, settings_open:false, displays:Vec::new(), rate_display_id:String::new(), browser_at_top:false, browser_minimal_active:false, glass_tint:0.0, fluid:Default::default(), fluid_origin:Pos2::ZERO, fluid_art:None, fluid_title:String::new(), screen:None, settings_focus_requested:false, settings_tab:0, settings_category:0, wechat_status:String::new(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
             listener_status: "尚未连接".into(),
             notification_bell_until: 0.0, notification_bell_at: -10.0, notice: None, hud_notice: None, hud_alpha: 0.0, notice_width:Spring::new(0.0,CLOSE.0,CLOSE.1), notice_details:false, pending_messengers:Vec::new(), messenger_scroll:0.0, alerts: Default::default(), history: Default::default(), pending: vec![],
             todo_first: 0, todo_choosing: false, pet: Default::default(), last_drink: None,
@@ -1486,6 +1501,37 @@ impl App {
     pub fn set_minimal(&mut self,enabled:bool) {
         self.settings.minimal=enabled;if enabled {self.settings.pet=false;}self.settings.save();
     }
+
+    /// 当前实际显示的屏幕 ID；“跟随主屏”时解析为主屏，未连接时回退到可用屏幕。
+    fn selected_display_id(&self) -> Option<String> {
+        crate::display_layout::selected(&self.displays, &self.settings.display_id).map(|display| display.id.clone())
+    }
+
+    /// 切到某块屏幕时，恢复它记住的档位；第一次见到这块屏幕则沿用当前档位并建立绑定。
+    pub(crate) fn apply_display_animation_rate(&mut self) {
+        let Some(display_id) = self.selected_display_id() else { return; };
+        self.rate_display_id = display_id.clone();
+        if let Some(rate) = self.settings.display_rate(&display_id) {
+            self.settings.animation_rate = rate;
+        } else {
+            self.settings.set_display_rate(&display_id, self.settings.animation_rate);
+        }
+    }
+
+    /// 用户改动画档位时，把当前档位绑定到当前屏幕。
+    pub(crate) fn bind_display_animation_rate(&mut self) {
+        if let Some(display_id) = self.selected_display_id() {
+            self.settings.set_display_rate(&display_id, self.settings.animation_rate);
+        }
+    }
+
+    /// 启动、换屏、主屏变化或显示器热插拔后，同步到实际屏幕的绑定档位。
+    fn sync_display_animation_rate(&mut self) {
+        if self.selected_display_id().is_some_and(|display_id| display_id != self.rate_display_id) {
+            self.apply_display_animation_rate();
+        }
+    }
+
     fn base_size(&self) -> (f32, f32) {
         if !self.compact_notices()&&!self.open {
             if let Some(a)=&self.notice {let (width,height)=self.notice_size(a);return (width+self.pet_space(),height);}
@@ -1523,6 +1569,7 @@ impl App {
     // ---------------------------------------------------------------
     pub fn frame(&mut self, ui: &mut egui::Ui, win: Rect, env: &Env) -> FrameOut {
         let ctx = ui.ctx().clone();
+        self.sync_display_animation_rate();
         let dt = match self.last_t {
             Some(t0) => (env.t - t0).clamp(0.0, 0.1) as f32,
             None => 0.0,

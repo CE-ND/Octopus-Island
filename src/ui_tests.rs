@@ -44,6 +44,39 @@ fn resized_font_atlases_stop_reuploading_and_release_unused_sizes(){
 }
 
 #[test]
+fn display_switch_restores_bound_animation_rate_and_persists(){
+    use crate::model::AnimationRate;
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    let display=|id:&str,primary:bool|crate::display_layout::Display{
+        id:id.into(),label:id.into(),
+        bounds:crate::display_layout::Bounds{left:0,top:0,right:1920,bottom:1080},primary
+    };
+    h.app.displays=vec![display("display-a",true),display("display-b",false)];
+    h.app.settings.display_id="display-a".into();
+    h.app.settings.animation_rate=AnimationRate::Standard;
+    h.app.apply_display_animation_rate();
+    h.app.settings.animation_rate=AnimationRate::HighRefresh;
+    h.app.bind_display_animation_rate();
+    h.app.settings.display_id="display-b".into();
+    h.app.apply_display_animation_rate();
+    assert_eq!(h.app.settings.animation_rate,AnimationRate::HighRefresh,"新屏幕首次切换沿用当前档位");
+    h.app.settings.animation_rate=AnimationRate::HighRefresh180;
+    h.app.bind_display_animation_rate();
+    h.app.settings.display_id="display-a".into();
+    h.app.apply_display_animation_rate();
+    assert_eq!(h.app.settings.animation_rate,AnimationRate::HighRefresh);
+    h.app.settings.display_id="display-b".into();
+    h.app.apply_display_animation_rate();
+    assert_eq!(h.app.settings.animation_rate,AnimationRate::HighRefresh180);
+    h.app.settings.save();
+    let loaded=crate::model::Settings::load();
+    assert_eq!(loaded.display_rate("display-a"),Some(AnimationRate::HighRefresh));
+    assert_eq!(loaded.display_rate("display-b"),Some(AnimationRate::HighRefresh180));
+    assert_eq!(loaded.display_id,"display-b");
+    assert_eq!(loaded.animation_rate,AnimationRate::HighRefresh180);
+}
+
+#[test]
 fn focus_durations_support_direct_input_and_keep_the_current_timer(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.app.open_settings_category(2);h.hover(H::local(200.0,60.0),1.0);

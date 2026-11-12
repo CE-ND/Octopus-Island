@@ -893,6 +893,15 @@ pub(crate) fn setting_row(ui:&mut egui::Ui,title:&str,description:&str,value:&mu
 
 /// 设置页统一的分段选择器（灰色底框 + 选中块）。返回值为是否发生了切换。
 pub(crate) fn settings_segmented<T:PartialEq+Copy>(ui:&mut egui::Ui,value:&mut T,options:&[(T,&str)],item_w:f32)->bool{
+    settings_segmented_with(ui,value,options,item_w,12.0,20.0)
+}
+
+/// 选项较多时用稍小字号和紧凑留白，保证五个档位能排在同一行。
+pub(crate) fn settings_segmented_compact<T:PartialEq+Copy>(ui:&mut egui::Ui,value:&mut T,options:&[(T,&str)],item_w:f32)->bool{
+    settings_segmented_with(ui,value,options,item_w,11.5,10.0)
+}
+
+fn settings_segmented_with<T:PartialEq+Copy>(ui:&mut egui::Ui,value:&mut T,options:&[(T,&str)],item_w:f32,font_size:f32,horizontal_padding:f32)->bool{
     let ctx=&ui.ctx().clone();
     let mut changed=false;
     egui::Frame::new().fill(settings_color(ctx,Color32::from_rgb(28,28,30),Color32::from_rgb(230,233,238)))
@@ -901,11 +910,11 @@ pub(crate) fn settings_segmented<T:PartialEq+Copy>(ui:&mut egui::Ui,value:&mut T
                 ui.spacing_mut().item_spacing.x=2.0;
                 for (option,label) in options {
                     let selected=*value==*option;
-                    let text=egui::RichText::new(*label).size(12.0).color(if selected{settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))}else{settings_color(ctx,Color32::from_gray(200),Color32::from_gray(70))});
+                    let text=egui::RichText::new(*label).size(font_size).color(if selected{settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))}else{settings_color(ctx,Color32::from_gray(200),Color32::from_gray(70))});
                     let button=egui::Button::new(text)
                         .fill(if selected{settings_color(ctx,Color32::from_rgb(72,72,76),Color32::WHITE)}else{Color32::TRANSPARENT})
                         .stroke(egui::Stroke::NONE).corner_radius(6.0);
-                    let width=item_w.max(ctx.fonts(|f|f.layout_no_wrap(label.to_string(),egui::FontId::proportional(12.0),Color32::WHITE).size().x)+20.0);
+                    let width=item_w.max(ctx.fonts(|f|f.layout_no_wrap(label.to_string(),egui::FontId::proportional(font_size),Color32::WHITE).size().x)+horizontal_padding);
                     if ui.add_sized([width,26.0],button).clicked() && !selected {*value=*option;changed=true;}
                 }
             });
@@ -1249,16 +1258,22 @@ impl App {
                         });
                         settings_label(ui,"岛体显示");
                         settings_card(ui,|ui|{
-                            let selected=self.displays.iter().find(|d|d.id==self.settings.display_id);
-                            let label=if self.settings.display_id.is_empty(){"跟随主屏"}else{selected.map_or("所选屏幕未连接",|d|d.label.as_str())};
+                            let selected_label=self.displays.iter().find(|d|d.id==self.settings.display_id).map(|d|d.label.clone());
+                            let selected_connected=selected_label.is_some();
+                            let label=if self.settings.display_id.is_empty(){"跟随主屏"}else{selected_label.as_deref().unwrap_or("所选屏幕未连接")};
+                            let mut display_changed=false;
                             settings_control_row(ui,"显示屏",56.0,|ui|{
                                 egui::ComboBox::from_id_salt("island-display").selected_text(label).width(ui.available_width().min(300.0)).truncate().show_ui(ui,|ui|{
-                                    ui.selectable_value(&mut self.settings.display_id,String::new(),"跟随主屏");
-                                    for display in &self.displays {ui.selectable_value(&mut self.settings.display_id,display.id.clone(),&display.label);}
+                                    display_changed|=ui.selectable_value(&mut self.settings.display_id,String::new(),"跟随主屏").changed();
+                                    for display in &self.displays {display_changed|=ui.selectable_value(&mut self.settings.display_id,display.id.clone(),&display.label).changed();}
                                 }).response
                             });
+                            if display_changed {
+                                self.apply_display_animation_rate();
+                                ctx.request_repaint();
+                            }
                             let edge=self.settings.dock.label();
-                            ui.label(egui::RichText::new(if !self.settings.display_id.is_empty()&&selected.is_none(){"暂时显示在主屏，重新连接所选屏幕后自动恢复。".to_string()}else{format!("显示在所选屏幕{edge}；断开时暂时回到主屏。")}).size(11.0).color(ui.visuals().weak_text_color()));
+                            ui.label(egui::RichText::new(if !self.settings.display_id.is_empty()&&!selected_connected{"暂时显示在主屏，重新连接所选屏幕后自动恢复。".to_string()}else{format!("显示在所选屏幕{edge}；断开时暂时回到主屏。")}).size(11.0).color(ui.visuals().weak_text_color()));
                             ui.add_space(4.0);
                             // 停靠边缘：顶部为横向；左右为竖向排列，展开面板从边缘滑出。
                             let docks:Vec<(crate::model::Dock,&str)>=crate::model::Dock::ALL.iter().map(|d|(*d,d.label())).collect();
@@ -1306,9 +1321,13 @@ impl App {
                             use crate::model::AnimationRate;
                             let rates:Vec<(AnimationRate,&str)>=AnimationRate::ALL.iter().map(|rate|(*rate,rate.label())).collect();
                             settings_control_row_right(ui,"动画帧率",|ui|{
-                                if settings_segmented(ui,&mut self.settings.animation_rate,&rates,72.0){ctx.request_repaint();}
+                                if settings_segmented_compact(ui,&mut self.settings.animation_rate,&rates,56.0){
+                                    self.bind_display_animation_rate();
+                                    ctx.request_repaint();
+                                }
                             });
                             settings_hint(ui,self.settings.animation_rate.description());
+                            settings_hint(ui,"每块显示屏会分别记住自己的动画帧率，切换后自动恢复。");
                         });
                         self.avoidance.settings(ui,&mut self.settings);
                         settings_label(ui,"声音与显示");
