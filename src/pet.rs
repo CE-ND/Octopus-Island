@@ -15,6 +15,8 @@ pub(crate) enum PetState {
     Music,
     Worried,
     Focused,
+    Working,
+    Waiting,
     Dozing,
     Sleeping,
 }
@@ -22,6 +24,28 @@ pub(crate) enum PetState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn agent_expressions_keep_the_face_and_resume_after_hidden_or_interactive_feedback(){
+        let mut pet=Pet::default();
+        pet.step(PetState::Working,1.0,1.0,[0.0;2],true);
+        assert_eq!(pet.expressions.current(),Some(Expression::ShyPeek));
+        let age=pet.agent_work_age;
+        pet.step(PetState::Working,30.0,29.0,[0.0;2],false);
+        assert_eq!(pet.agent_work_age,age,"隐藏时不跳过表情");
+        pet.react(PetState::Satisfied);pet.step(PetState::Satisfied,31.0,0.1,[0.0;2],true);
+        assert_eq!(pet.expressions.current(),Some(Expression::Heart));
+        pet.step(PetState::Working,32.0,0.0,[0.0;2],true);
+        assert_eq!(pet.expressions.current(),Some(Expression::ShyPeek));
+        assert_eq!(pet.agent_work_age,age,"互动后继续原来的工作表情");
+        pet.step(PetState::Waiting,33.0,1.0,[0.0;2],true);
+        assert_eq!(pet.expressions.current(),Some(Expression::SideGlance));
+        assert_eq!(pet.agent_work_age,age);
+        for time in [0.0,2.0,6.0,10.0,20.0,3600.0] {
+            let (expression,frame_time)=agent_expression_at(time,false);
+            assert!([Expression::ShyPeek,Expression::Smug,Expression::Wink].contains(&expression));
+            assert!(frame_time>=0.0&&frame_time<expression.duration());
+        }
+    }
     #[test]
     fn listening_uses_all_twelve_new_expressions_between_singing_poses(){
         let mut pet=Pet::default();let mut seen=std::collections::HashSet::new();
@@ -220,6 +244,8 @@ pub(crate) struct Pet {
     pub expressions: crate::pet_expressions::Expressions,
     age: f32,
     music_age:f32,
+    agent_work_age:f32,
+    agent_wait_age:f32,
     eyes: [Eye; 2],
     gaze: [f32; 2],
     y: f32,
@@ -228,8 +254,27 @@ pub(crate) struct Pet {
 impl Default for Pet {
     fn default() -> Self {
         Self { state: PetState::Awake, reaction: None, waking_until: 0.0, last_idle: 0.0,
-            hovered: false, worried: false, expressions:Default::default(), age: 0.0, music_age:0.0, eyes: [Eye::open(4.4); 2], gaze: [0.0; 2], y: 0.0 }
+            hovered: false, worried: false, expressions:Default::default(), age: 0.0, music_age:0.0, agent_work_age:0.0, agent_wait_age:0.0, eyes: [Eye::open(4.4); 2], gaze: [0.0; 2], y: 0.0 }
     }
+}
+
+/// 工作和等待沿用小岛的完整表情，表情中段稍作停留，避免像状态灯一样快速闪动。
+fn agent_expression_at(age:f32,waiting:bool)->(Expression,f32){
+    let pool:&[Expression]=if waiting {&[Expression::SideGlance,Expression::ShyPeek]}
+        else {&[Expression::ShyPeek,Expression::Smug,Expression::Wink]};
+    let hold=2.0;
+    let period:f32=pool.iter().map(|expression|expression.duration()+hold).sum();
+    let mut elapsed=age.rem_euclid(period);
+    for &expression in pool {
+        let duration=expression.duration();
+        if elapsed<duration+hold {
+            let middle=duration*0.5;
+            let time=if elapsed<middle {elapsed}else if elapsed<middle+hold {middle}else{elapsed-hold};
+            return (expression,time);
+        }
+        elapsed-=duration+hold;
+    }
+    (pool[0],0.0)
 }
 
 impl Pet {
@@ -255,6 +300,12 @@ impl Pet {
         if state==PetState::Music && visible {
             self.music_age+=dt;
             if let Some((expression,time))=music_segment_at(self.music_age).expression {self.expressions.play_at(expression,time);}
+        }
+        if matches!(state,PetState::Working|PetState::Waiting) {
+            let age=if state==PetState::Working{&mut self.agent_work_age}else{&mut self.agent_wait_age};
+            if visible && crate::bar_layout::animations_enabled(){*age+=dt;}
+            let (expression,time)=agent_expression_at(*age,state==PetState::Waiting);
+            self.expressions.play_at(expression,time);
         }
         let age = self.age;
         let mut eyes = [Eye::open(4.4); 2];
@@ -297,11 +348,13 @@ impl Pet {
                 eyes[1] = Eye { spread: 0.6, tilt: 0.7, y: 1.0, ..Eye::open(1.8) };
             },
             PetState::Focused => { eyes = [Eye::open(1.8); 2]; look = [gaze[0] * 0.2, 0.0]; y = 0.0; },
+            // 助手状态使用原有的完整表情图集，进度指示留在 Agent 徽标旁。
+            PetState::Working | PetState::Waiting => {},
             PetState::Dozing => { eyes = [Eye::open(0.6); 2]; y = 1.0; look = [0.0; 2]; },
             PetState::Sleeping => { eyes = [Eye::arc(2.4, 1.0); 2]; y = 0.8 + (t as f32 * 1.2).sin() * 0.4; look = [0.0; 2]; },
         }
         if self.expressions.current().is_some() {eyes=[Eye::open(4.4);2];look=[0.0;2];y=0.0;}
-        if self.expressions.current().is_none() && matches!(state, PetState::Awake | PetState::Curious | PetState::Focused | PetState::Worried) {
+        if self.expressions.current().is_none() && matches!(state, PetState::Awake | PetState::Curious | PetState::Focused | PetState::Working | PetState::Waiting | PetState::Worried) {
             let start = 2.0 + crate::anim::hash01((t / 5.6).floor() as u64) * 2.7;
             let blink = ((t % 5.6) as f32 - start) / 0.18;
             if (0.0..1.0).contains(&blink) {

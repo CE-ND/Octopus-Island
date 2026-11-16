@@ -1,28 +1,18 @@
 ﻿//! 持久化与状态模型。
 //!
-//! 文件布局与原工具同名同结构（原工具字符串中可见的路径与键名），但默认目录
-//! 用独立的 `%APPDATA%\OctopusIsland`，避免与原工具的 `%APPDATA%\Nusa` 互相覆盖：
-//!   %APPDATA%\OctopusIsland\settings.txt   -> pet=0/1, minimal=0/1
-//!   %APPDATA%\OctopusIsland\todo.txt
-//!   %APPDATA%\OctopusIsland\water.txt      -> bottle=<ml> / goal=<ml> / start=YYYY-MM-DD
-//!   %APPDATA%\OctopusIsland\shelf.txt      -> 置物清单（每行一个绝对路径）
+//! 默认保存在当前用户目录的 `.octopus_island` 文件夹：
+//!   %USERPROFILE%\.octopus_island\settings.txt   -> pet=0/1, minimal=0/1
+//!   %USERPROFILE%\.octopus_island\todo.txt
+//!   %USERPROFILE%\.octopus_island\water.txt      -> bottle=<ml> / goal=<ml> / start=YYYY-MM-DD
+//!   %USERPROFILE%\.octopus_island\shelf.txt      -> 置物清单（每行一个绝对路径）
 //!
-//! 设置环境变量 `OCTOPUS_ISLAND_DATA_DIR` 可把以上目录整体改到别处（用于与已安装的
-//! 原工具并存、或跑测试时不碰真实数据）。
+//! 启动时自动复制旧 `%APPDATA%\OctopusIsland` 数据，原目录保留作为备份。
+//! 环境变量 `OCTOPUS_ISLAND_DATA_DIR` 可指定独立目录；显式指定时不迁移日常数据。
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-fn env_dir(key: &str) -> PathBuf {
-    PathBuf::from(std::env::var(key).unwrap_or_else(|_| ".".into()))
-}
-
-pub fn config_dir() -> PathBuf {
-    if let Ok(root) = std::env::var("OCTOPUS_ISLAND_DATA_DIR") {
-        return PathBuf::from(root);
-    }
-    env_dir("APPDATA").join("OctopusIsland")
-}
+pub use crate::data_dir::{config_dir, initialize_data_dir};
 
 fn read_kv(path: &Path) -> Vec<(String, String)> {
     let mut out = Vec::new();
@@ -305,6 +295,10 @@ pub struct Settings {
     pub wechat_notifications:bool,
     /// 微信缩在托盘时，点提醒通过系统托盘按钮唤起微信（默认关闭）。
     pub wechat_tray_open:bool,
+    /// Claude Code 状态提醒：通过官方 hooks 获知开始处理、等待授权和回合结束（默认关闭）。
+    pub agent_notifications:bool,
+    /// Codex 状态提醒，与 Claude Code 独立启停。
+    pub codex_notifications:bool,
     pub qq_only:bool,
     pub notification_preview:bool,
     pub notifications: bool,
@@ -337,11 +331,23 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { display_id: String::new(), multi_display: true, skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, animation_rate: AnimationRate::Standard, display_rates: Vec::new(), settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 8], page_order: [0,1,2,3,4,5,6,7], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true }
+        Self { display_id: String::new(), multi_display: true, skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, animation_rate: AnimationRate::Standard, display_rates: Vec::new(), settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 8], page_order: [0,1,2,3,4,5,6,7], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wechat_tray_open:false, agent_notifications:false, codex_notifications:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true }
     }
 }
 
 impl Settings {
+    pub fn agent_enabled(&self, agent: crate::agent_hooks::Agent) -> bool {
+        match agent {
+            crate::agent_hooks::Agent::ClaudeCode => self.agent_notifications,
+            crate::agent_hooks::Agent::Codex => self.codex_notifications,
+        }
+    }
+    pub fn set_agent_enabled(&mut self, agent: crate::agent_hooks::Agent, enabled: bool) {
+        match agent {
+            crate::agent_hooks::Agent::ClaudeCode => self.agent_notifications = enabled,
+            crate::agent_hooks::Agent::Codex => self.codex_notifications = enabled,
+        }
+    }
     /// 主窗口（灵动岛）的界面缩放倍率。
     pub fn island_scale(&self) -> f32 {
         island_size_value(self.island_size) as f32 / 100.0
@@ -433,6 +439,8 @@ impl Settings {
                 "read_notifications" => s.read_notifications=v=="1",
                 "wechat_notifications" => s.wechat_notifications=v=="1",
                 "wechat_tray_open" => s.wechat_tray_open=v=="1",
+                "agent_notifications" => s.agent_notifications=v=="1",
+                "codex_notifications" => s.codex_notifications=v=="1",
                 "qq_only" => s.qq_only=v=="1",
                 "notification_preview" => s.notification_preview=v=="1",
                 "system_hud" => s.system_hud = v != "0",
@@ -502,6 +510,8 @@ impl Settings {
                 ("read_notifications".into(),(self.read_notifications as u8).to_string()),
                 ("wechat_notifications".into(),(self.wechat_notifications as u8).to_string()),
                 ("wechat_tray_open".into(),(self.wechat_tray_open as u8).to_string()),
+                ("agent_notifications".into(),(self.agent_notifications as u8).to_string()),
+                ("codex_notifications".into(),(self.codex_notifications as u8).to_string()),
                 ("qq_only".into(),(self.qq_only as u8).to_string()),
                 ("notification_preview".into(),(self.notification_preview as u8).to_string()),
                 ("system_hud".into(), (self.system_hud as u8).to_string()),

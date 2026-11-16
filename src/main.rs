@@ -77,6 +77,8 @@ struct Shell {
     /// v0.5.4：蓝牙音频设备（后台线程推送）与音量回声的静默窗口。
     #[cfg(windows)]
     bt_rx: Option<octopus_island::bt::Service>,
+    /// 系统目录通知服务；空条目记住接入失败，避免每帧反复重试。
+    agent_hooks: std::collections::HashMap<octopus_island::agent_hooks::Agent,Option<octopus_island::agent_hooks::Service>>,
     bt: Vec<octopus_island::bt::Device>,
     bt_ready: bool,
     volume_quiet: PollClock,
@@ -203,6 +205,7 @@ impl Shell {
             autostart,
             #[cfg(windows)]
             bt_rx: None,
+            agent_hooks: Default::default(),
             bt: Vec::new(),
             bt_ready: false,
             volume_quiet: PollClock::default(),
@@ -635,6 +638,40 @@ impl eframe::App for Shell {
             if let Some(service)=&self.bt_rx {
                 while let Ok(found)=service.rx.try_recv(){ self.bt=found; self.bt_ready=true; }
             }
+            for agent in octopus_island::agent_hooks::Agent::ALL {
+                if self.app.settings.agent_enabled(agent) && self.app.settings.notifications {
+                    if let std::collections::hash_map::Entry::Vacant(entry)=self.agent_hooks.entry(agent) {
+                        let dir=agent.config_dir();
+                        let wake=ctx.clone();
+                        let result=octopus_island::agent_hooks::install(agent,&dir)
+                            .and_then(|()|octopus_island::agent_hooks::spawn(agent,dir,move||wake.request_repaint()));
+                        let service=match result {
+                            Ok(service)=>{self.app.agent_status.insert(agent,"已登记 · 正在启动状态提醒".into());Some(service)},
+                            Err(error)=>{self.app.agent_status.insert(agent,error);None},
+                        };
+                        entry.insert(service);
+                    }
+                } else {
+                    self.agent_hooks.remove(&agent);
+                    if self.app.settings.agent_enabled(agent){self.app.agent_status.insert(agent,"未在监听 · 提醒总开关已关闭".into());}
+                }
+                if let Some(Some(service))=self.agent_hooks.get(&agent) {
+                    use octopus_island::agent_hooks::WatchStatus;
+                    while let Ok(status)=service.status.try_recv(){
+                        if status!=WatchStatus::Listening {self.app.agent_listener_unavailable(agent);}
+                        let message=match status {
+                            WatchStatus::Listening=>format!("已接入 · 等待 {} 状态",agent.label()),
+                            WatchStatus::WaitingForDirectory=>"等待助手生成新的状态记录，收到后自动恢复".into(),
+                            WatchStatus::Failed(error)=>format!("监听已停止 · {error} · 请重新开启提醒"),
+                        };
+                        self.app.agent_status.insert(agent,message);
+                    }
+                    while let Ok(event)=service.rx.try_recv(){
+                        self.app.agent_status.insert(agent,format!("正在接收 {} 状态提醒",agent.label()));
+                        self.app.receive_agent_event(event);
+                    }
+                }
+            }
             let wechat_enabled=self.app.settings.wechat_notifications && self.app.settings.notifications;
             if self.wechat.as_ref().is_some_and(|listener|!listener.registered()){self.wechat=None;}
             if !wechat_enabled {
@@ -834,6 +871,18 @@ impl eframe::App for Shell {
                     self.volume_quiet=PollClock::now();
                 },
                 Cmd::Copy(text)=>{ctx.copy_text(text);self.app.say("已复制");},
+                Cmd::SetAgentHooks(agent,enabled)=>{
+                    // 先通知旧服务停止，再修改脚本/目录，防止取消时与目录恢复互相竞争。
+                    self.agent_hooks.remove(&agent);
+                    let dir=agent.config_dir();
+                    let result=if enabled{octopus_island::agent_hooks::install(agent,&dir)}else{octopus_island::agent_hooks::uninstall(agent,&dir)};
+                    let status=match result {
+                        Ok(())=>if enabled{format!("已接入 · {} 状态变化时提醒",agent.label())}else{format!("已从 {} 配置中移除",agent.label())},
+                        Err(error)=>{self.app.settings.set_agent_enabled(agent,!enabled);error},
+                    };
+                    self.app.agent_status.insert(agent,status);
+                    self.app.settings.save();
+                },
                 Cmd::Notify(title,body)=>{
                     #[cfg(windows)] if let Some(tray)=&self.tray{tray.notify(&title,&body,self.app.settings.sound);}
                 },
@@ -1044,6 +1093,20 @@ mod open_path_tests {
 }
 
 fn main() -> std::process::ExitCode {
+    // 单实例（与原版同名互斥体）
+    #[cfg(windows)]
+    if !octopus_island::tray::single_instance() {
+        if !octopus_island::tray::activate_existing(std::env::args().any(|arg|arg=="--calendar")) {
+            diagnostics::report_at(&std::env::temp_dir().join("OctopusIsland/diagnostics"), "岛仔已在运行，但暂时无法打开窗口。\n请稍后重试；若仍无法打开，请在任务管理器的“详细信息”中结束 octopus-island.exe 后重试。", "已有实例可能正在启动或已无响应。请稍后重试；若仍无法打开，请在任务管理器的“详细信息”中结束 octopus-island.exe，再重新启动。");
+        }
+        return std::process::ExitCode::SUCCESS;
+    }
+    if let Err(error) = octopus_island::model::initialize_data_dir() {
+        // 迁移失败的日志放在临时目录，避免提前创建新目录使下次启动跳过迁移。
+        diagnostics::report_at(&std::env::temp_dir().join("OctopusIsland/diagnostics"),
+            "岛仔无法准备本地数据目录。原数据已保留，请检查目录权限后重试。", &error.to_string());
+        return std::process::ExitCode::FAILURE;
+    }
     diagnostics::install();
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -1055,14 +1118,6 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> eframe::Result<()> {
-    // 单实例（与原版同名互斥体）
-    #[cfg(windows)]
-    if !octopus_island::tray::single_instance() {
-        if !octopus_island::tray::activate_existing(std::env::args().any(|arg|arg=="--calendar")) {
-            diagnostics::report("岛仔已在运行，但暂时无法打开窗口。\n请稍后重试；若仍无法打开，请在任务管理器的“详细信息”中结束 octopus-island.exe 后重试。", "已有实例可能正在启动或已无响应。请稍后重试；若仍无法打开，请在任务管理器的“详细信息”中结束 octopus-island.exe，再重新启动。");
-        }
-        return Ok(());
-    }
     #[cfg(windows)]
     std::thread::spawn(octopus_island::record_install_size);
     diagnostics::startup("初始化图形窗口");

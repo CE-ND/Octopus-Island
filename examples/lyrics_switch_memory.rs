@@ -62,7 +62,7 @@ fn main()->eframe::Result<()> {
     let args=std::env::args().collect::<Vec<_>>();let mode=args.get(1).cloned().unwrap_or_else(||"island".into());
     assert!(["island","expanded","disabled"].contains(&mode.as_str()));
     let seconds=args.get(2).map(|s|s.parse::<f64>().unwrap()).unwrap_or(120.0);
-    let cache=std::path::PathBuf::from(std::env::var_os("APPDATA").unwrap()).join("OctopusIsland/lyrics");
+    let cache=octopus_island::model::config_dir().join("lyrics");
     let lyrics=std::fs::read_dir(cache).unwrap().filter_map(|e|{
         let path=e.ok()?.path();if path.extension()?.to_str()? != "lrc"{return None;}
         let lyrics=octopus_island::lyrics::parse_lrc(&std::fs::read_to_string(path).ok()?);

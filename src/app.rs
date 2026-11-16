@@ -160,6 +160,8 @@ pub enum Cmd {
     RequestNotifications,
     RequestQqNotifications,
     DisconnectNotifications,
+    /// 在对应助手配置里登记（true）或移除（false）岛仔的 hooks。
+    SetAgentHooks(crate::agent_hooks::Agent, bool),
     ToggleAutostart,
     AddFiles,
     DragFile(PathBuf),
@@ -830,6 +832,11 @@ pub struct App {
     pub(crate) settings_tab:usize,
     pub(crate) settings_category:usize,
     pub wechat_status:String,
+    /// 各助手的目录监听状态，显示在对应设置开关下方。
+    pub agent_status:HashMap<crate::agent_hooks::Agent,String>,
+    pub(crate) agent_activity:crate::agent_hooks::activity::Activity,
+    /// 各助手会话最近一次状态（会话、状态、时间），用于合并同一次授权触发的重复事件。
+    pub(crate) agent_recent:Vec<(crate::agent_hooks::Agent,String,crate::agent_hooks::Kind,f64)>,
     pub(crate) notification_apps:model::NotificationApps,
     pub(crate) subpage:Option<usize>,
     pub(crate) task_dialog:Option<crate::extras::TaskDraft>,
@@ -980,7 +987,7 @@ impl App {
             media_anchor: (String::new(), 0.0, 0.0, false),
             media: NowPlaying::default(),
             music_artwork: None,
-            settings_open:false, displays:Vec::new(), fluid:Default::default(), fluid_art:None, fluid_title:String::new(), settings_focus_requested:false, settings_tab:0, settings_category:0, wechat_status:String::new(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
+            settings_open:false, displays:Vec::new(), fluid:Default::default(), fluid_art:None, fluid_title:String::new(), settings_focus_requested:false, settings_tab:0, settings_category:0, wechat_status:String::new(), agent_status:HashMap::new(), agent_activity:Default::default(), agent_recent:Vec::new(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
             listener_status: "尚未连接".into(),
             notification_bell_until: 0.0, notification_bell_at: -10.0, notice: None, pending_messengers:Vec::new(), alerts: Default::default(), history: Default::default(), pending: vec![],
             todo_first: 0, todo_choosing: false, pet: Default::default(), last_drink: None,
@@ -1560,7 +1567,7 @@ impl App {
         self.todo_ime_frame=false;
     }
 
-    fn island_lyrics_active(&self)->bool {
+    pub(crate) fn island_lyrics_active(&self)->bool {
         if self.side() {return false;}
         self.settings.island_lyrics && self.settings.visible_pages[0] && self.media.is_music()
             && !self.browser_minimal_active
@@ -1617,8 +1624,8 @@ impl App {
     pub(crate) fn effective_minimal(&self)->bool {self.settings.minimal || self.browser_minimal_active}
     pub(crate) fn pet_enabled(&self)->bool {self.settings.pet && !self.effective_minimal() && !self.side()}
     pub(crate) fn pet_space(&self)->f32 {if self.pet_enabled(){44.0}else{0.0}}
-    fn lyric_focus_space(&self)->f32 {if self.pomo.running{crate::focus_bar::LYRIC_WIDTH+10.0}else{0.0}}
-    fn lyric_bar_width(&self)->f32 {LYRIC_BAR_W+if self.pet_enabled(){48.0}else{0.0}+self.lyric_focus_space()}
+    pub(crate) fn lyric_focus_space(&self)->f32 {if self.pomo.running{crate::focus_bar::LYRIC_WIDTH+10.0}else{0.0}}
+    pub(crate) fn lyric_bar_width(&self)->f32 {LYRIC_BAR_W+if self.pet_enabled(){48.0}else{0.0}+self.lyric_focus_space()+self.agent_lyric_space()}
     fn notice_size(&self,a:&Alert)->(f32,f32) {
         let (width,height)=if a.meeting.is_some(){(360.0,136.0)}else if a.source==crate::extras::AlertSource::Internal && a.title=="蓝牙设备"{(HUD_W,48.0)}else if a.is_hud(){(HUD_W,38.0)}else{(334.0,44.0)};
         (width,height)
@@ -1781,6 +1788,8 @@ impl App {
         let mut cmds = Vec::new();
 
         if advance_shared {
+            let enabled=crate::agent_hooks::Agent::ALL.map(|agent|(agent,self.settings.notifications&&self.settings.agent_enabled(agent)));
+            self.agent_activity.retain(|agent|enabled.iter().any(|(id,on)|*id==agent&&*on));
             self.tick(env, dt, elapsed);
             self.sync_device(env);
             self.tick_alerts();
@@ -1798,6 +1807,7 @@ impl App {
         self.resident_power=(env.battery,env.charging);
         let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled());
         layout.reorder(&self.settings.resident_order);
+        if let Some(width)=self.agent_bar_width(){layout.insert_agent(width);}
         for (position,extra) in self.quota_balance_layout(&ctx){layout.balance_tail(position,extra);}
         if self.settings.clock_period!=0 { layout.widen_clock(40.0); }
         if self.pet_enabled() {
@@ -1908,7 +1918,8 @@ impl App {
                 }
             }
         } else {self.wheel_delta=0.0;}
-        let want = (inside && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
+        let over_agent=self.over_agent_badge(env,win,top);
+        let want = (inside && !over_agent && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
         self.morph(want, inside, env.t, dt, advance_shared);
         self.update_pet(env, cx, advance_shared);
 
@@ -1995,12 +2006,23 @@ impl App {
         }else if !minimal_pill || pc > 0.0 {
             self.resident_header(&base, panel, cx, if restoring_lyrics{0.0}else{pc}, reveal, env);
         }
+        if minimal_pill {
+            if let Some(session)=self.agent_activity.primary(self.t){
+                let ink=if session.needs_input(){crate::extras::AGENT_WAITING}else if session.working(){theme::CYAN}else{theme::GRAY};
+                let offset=if session.working()&&bar::animations_enabled(){(self.t as f32*2.0).sin()*0.22}else{0.0};
+                let point=panel.center()+if side{Vec2::new(0.0,panel.height()*offset)}else{Vec2::new(panel.width()*offset,0.0)};
+                painter.circle_filled(point,1.5,ink);
+            }
+        }
         if let Some(rect)=notice_rect {
             let c=Card::new(ui,rect.min,rect.intersect(ui.max_rect()));
             if let Some(a)=self.hud_notice.clone() {
                 let opacity=self.hud_alpha*smoothstep(0.45,0.95,self.notice_width.pos/44.0);
                 let c=c.faded(opacity);let c=if self.notice.is_none()||opacity<0.85 {c.ghost()}else{c};
-                if a.source!=crate::extras::AlertSource::Internal {
+                if let crate::extras::AlertSource::Agent{agent,kind,..}=&a.source {
+                    crate::extras::agent_logo(&c,*agent,18.0,15.0,18.0);
+                    if kind.waiting(){c.circle(25.5,8.0,2.2,crate::extras::AGENT_WAITING);}
+                }else if a.source!=crate::extras::AlertSource::Internal {
                     paint::bell(&c.scaled(18.0,15.0,0.85),18.0,15.0,theme::WHITE,paint::bell_swing(self.t-a.at));
                     c.circle(22.0,10.5,2.0,Color32::from_rgb(255,72,72));
                 }else{crate::extras::notice_badge(&c,18.0,15.0,&a);}
@@ -2142,6 +2164,7 @@ impl App {
             || !self.notice_width.settled(1.0);
         let pet_visible=self.pet_a>0.01 && !self.open && !minimal_pill;
         let ambient=self.settings.skin==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
+            || !self.open && self.notice.is_none() && bar::animations_enabled() && self.agent_activity.primary(self.t).is_some_and(|session|session.working())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
             || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
         let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
@@ -2509,7 +2532,7 @@ impl App {
         let lyric_alpha=if self.island_lyrics_active() {1.0-smoothstep(0.0,0.35,p)}else{0.0};
         if let Some(galley)=self.island_lyric_layout.clone().filter(|_|lyric_alpha>0.003) {
             let c=base.faded(lyric_alpha);
-            let content_width=self.lyric_bar_width()-self.lyric_focus_space();
+            let content_width=self.lyric_bar_width()-self.lyric_focus_space()-self.agent_lyric_space();
             let width=self.w.pos.max(content_width);
             let left=local_cx-width/2.0;
             let center_y=BAR_H/2.0;
@@ -2533,6 +2556,7 @@ impl App {
             let position=c.pos(left+content_width-LYRIC_BAR_W/2.0,center_y-galley.size().y/2.0+(1.0-fade)*3.0);
             c.painter.galley(position,galley,if lyric.is_some(){theme::WHITE}else{theme::GRAY});
             paint::playback_bars(&c,left+content_width-21.0,center_y,self.t,self.media.playing,theme::WHITE);
+            if self.agent_lyric_space()>0.0 {self.draw_agent_badge(&c,left+content_width+16.0,center_y,true);}
             if self.pomo.running {
                 let alpha=smoothstep(0.88,1.0,(width-content_width)/self.lyric_focus_space());
                 crate::focus_bar::draw(&c.faded(alpha),left+width-14.0-crate::focus_bar::LYRIC_WIDTH/2.0,center_y,self.t,&self.pomo,self.phase_secs(self.pomo.phase),true);
@@ -2596,6 +2620,7 @@ impl App {
         if compact_alpha>0.004 {
             let c=base.faded(compact_alpha);let c=if compact_alpha<0.8{c.ghost()}else{c};
             self.draw_quota_bar(&c,local_cx,&layout);
+            if let Some(x)=layout.x[bar::AGENT]{self.draw_agent_badge(&c,local_cx+x,15.0,false);}
         }
         if self.pomo.running && compact_alpha>0.004 {
             crate::focus_bar::draw(&base.faded(compact_alpha),local_cx+layout.x[bar::FOCUS].unwrap(),15.0,self.t,&self.pomo,self.phase_secs(self.pomo.phase),false);

@@ -234,7 +234,7 @@ dist\SHA256SUMS.txt
 
 | 变量 | 用途 |
 | --- | --- |
-| `OCTOPUS_ISLAND_DATA_DIR` | 指定开发实例的数据目录，避免覆盖 `%APPDATA%\OctopusIsland` |
+| `OCTOPUS_ISLAND_DATA_DIR` | 指定开发实例的数据目录，避免覆盖 `%USERPROFILE%\.octopus_island`；显式指定时不迁移旧数据 |
 | `OCTOPUS_ISLAND_RENDERER` | 设置为 `wgpu` 时强制使用 wgpu 图形后端 |
 | `CARGO_HOME` | 自定义 Cargo 缓存和命令目录 |
 | `RUSTUP_HOME` | 自定义 Rust 工具链目录 |

@@ -11,7 +11,8 @@ pub(crate) const MUSIC: usize = 6;
 pub(crate) const FOCUS: usize = 7;
 pub(crate) const BELL: usize = 8;
 pub(crate) const PET: usize = 9;
-const WIDTHS: [f32; 10] = [44.0,20.0,27.0,27.0,27.0,22.0,14.0,crate::focus_bar::WIDTH,20.0,32.0];
+pub(crate) const AGENT: usize = 10;
+const WIDTHS: [f32; 11] = [44.0,20.0,27.0,27.0,27.0,22.0,14.0,crate::focus_bar::WIDTH,20.0,32.0,0.0];
 
 pub(crate) const DEFAULT_ORDER: [usize;6]=[BATTERY,PET,CLOCK,QUOTA,MUSIC,FOCUS];
 pub(crate) fn valid_order(order:&[usize])->bool {
@@ -69,6 +70,14 @@ impl Layout {
         Self {width:width.max(96.0),x,widths,quotas}
     }
     pub fn quota_slots(&self)->impl Iterator<Item=usize> { (0..self.quotas).map(quota_slot) }
+    /// 插入时钟前方，保留现有组件排序并让左右内容均匀让位。
+    pub fn insert_agent(&mut self,width:f32) {
+        let clock=self.x[CLOCK].unwrap();
+        let center=clock-self.widths[CLOCK]/2.0-6.0;
+        let extra=width+12.0;
+        for x in self.x.iter_mut().flatten(){*x+=if *x<clock{-extra/2.0}else{extra/2.0};}
+        self.x[AGENT]=Some(center);self.widths[AGENT]=width;self.width+=extra;
+    }
     pub fn balance_tail(&mut self,position:usize,extra:f32){
         let slot=quota_slot(position);
         let Some(center)=self.x[slot] else{return;};
@@ -116,7 +125,7 @@ pub(crate) struct Motion {
     initialized: bool,
 }
 impl Default for Motion {
-    fn default()->Self {Self {target:Layout::new(false,0,false,false,false,false),positions:vec![Spring::new(0.0,360.0,0.76);10],initialized:false}}
+    fn default()->Self {Self {target:Layout::new(false,0,false,false,false,false),positions:vec![Spring::new(0.0,360.0,0.76);WIDTHS.len()],initialized:false}}
 }
 impl Motion {
     pub fn step(&mut self,target:Layout,dt:f32,animate:bool) {
@@ -141,6 +150,18 @@ impl Motion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn activity_fits_between_resident_items_and_handles_extra_quota_accounts(){
+        for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,PET,BATTERY]] {for quotas in 0..=7 {for pet in [false,true]{
+            let mut layout=Layout::new(true,quotas,true,true,false,pet);
+            layout.reorder(&order);layout.insert_agent(120.0);layout.widen_clock(40.0);
+            let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|{let w=layout.widths[i]+if i==CLOCK{40.0}else{0.0};(x-w/2.0,x+w/2.0)})).collect();
+            boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
+            assert!(boxes.windows(2).all(|pair|pair[1].0-pair[0].1>=6.9));
+            assert!(boxes[0].0>=-layout.width/2.0+15.9);
+            assert!(boxes.last().unwrap().1<=layout.width/2.0-15.9);
+        }}}
+    }
     #[test] fn deepseek_balance_follows_more_and_never_overlaps(){
         for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,PET,BATTERY]] {for quotas in 1..=6 {for battery in [false,true]{
             let mut layout=Layout::new(battery,quotas,true,true,false,true);layout.reorder(&order);layout.balance_tail(quotas-1,76.0);layout.widen_clock(40.0);

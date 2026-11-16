@@ -21,14 +21,14 @@ pub const SIDE_HALF_EXTENT: f32 = 150.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum SideItem {
-    Clock, Battery, Music, Focus, Bell,
+    Clock, Battery, Music, Focus, Bell, Agent,
     /// AI 额度：账号下标（None 为「+N」）与高度。
     Quota(usize, f32),
 }
 
 impl SideItem {
     fn height(self) -> f32 {
-        match self { Self::Clock => 32.0, Self::Battery => 20.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Quota(_, h) => h }
+        match self { Self::Clock => 32.0, Self::Battery => 20.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Agent => 26.0, Self::Quota(_, h) => h }
     }
 }
 
@@ -39,6 +39,7 @@ impl App {
     /// 竖向胶囊里依次显示的内容。
     pub(crate) fn side_items(&self) -> Vec<SideItem> {
         let mut items = vec![SideItem::Clock];
+        if self.agent_bar_width().is_some(){items.push(SideItem::Agent);}
         if self.settings.show_battery && self.resident_power.0.is_some() { items.push(SideItem::Battery); }
         if self.media.is_music() { items.push(SideItem::Music); }
         if self.pomo.running { items.push(SideItem::Focus); }
@@ -122,6 +123,7 @@ impl App {
             let h = item.height();
             let mid = y + h / 2.0;
             match item {
+                SideItem::Agent => self.draw_agent_badge(c,cx,mid,true),
                 SideItem::Clock => {
                     let (hour, minute) = side_clock(&self.settings.clock_text(&env.clock));
                     c.text(cx, mid - 1.0, &hour, 13.5, W::Bold, theme::WHITE, H::Center);

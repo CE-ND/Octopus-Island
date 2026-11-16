@@ -6,9 +6,12 @@
 //! - `native` / `tray`：仅 Windows 的窗口区域、命中穿透与托盘
 
 pub mod display_layout;
+mod data_dir;
 mod mail_privacy;
 pub mod poll_clock;
 pub mod resources;
+pub mod agent_hooks;
+mod agent_activity;
 pub mod anim;
 pub mod app;
 pub mod bt;

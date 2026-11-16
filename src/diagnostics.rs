@@ -22,7 +22,11 @@ fn message(directory: &Path, title: &str, details: &str) -> String {
 }
 
 pub fn report(title: &str, details: &str) {
-    let text = message(&octopus_island::model::config_dir().join("diagnostics"), title, details);
+    report_at(&octopus_island::model::config_dir().join("diagnostics"), title, details);
+}
+
+pub fn report_at(directory: &Path, title: &str, details: &str) {
+    let text = message(directory, title, details);
     #[cfg(windows)]
     {
         use windows::core::{w, PCWSTR};

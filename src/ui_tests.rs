@@ -5519,7 +5519,7 @@ fn side_dock_stacks_ai_quota_and_opens_the_account(){
     let total=h.app.side_bar_len()-14.0;
     let mut y=top+(h.app.h.pos-total)/2.0;
     for item in h.app.side_items() {
-        let height=match item {crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
+        let height=match item {crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Agent=>26.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
         y+=height;
     }
     let click=Pos2::new(18.0,y);
@@ -6340,5 +6340,242 @@ fn claude_local_only_settings_show_notice_without_manual_reset_controls(){
             let name=format!("{}-{}",if connection{"connection"}else{"account"},if dark{"dark"}else{"light"});capture(&h,&mut raster,&name);
         }
         assert!(h.app.quota.gemini_connecting.is_none()&&h.app.quota.workbuddy_connecting.is_none()&&h.app.quota.login.is_none());
+    }
+}
+
+fn agent_event(kind:crate::agent_hooks::Kind,tool:&str,session:&str)->crate::agent_hooks::Event{
+    crate::agent_hooks::Event{agent:crate::agent_hooks::Agent::ClaudeCode,kind,tool:tool.into(),session:session.into(),project:"Octopus-Island".into(),meta:Default::default()}
+}
+
+#[test]
+fn agent_activity_stays_after_notice_and_drives_the_pet_without_stealing_hover(){
+    use crate::agent_hooks::{Kind,activity::Phase};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    h.app.settings.agent_notifications=true;h.app.opts.pet_idle=1.0;h.system_idle=Some(600.0);h.frame(vec![]);
+    h.app.receive_agent_event(agent_event(Kind::Working,"","s1"));h.frame(vec![]);
+    h.t+=30.0;for _ in 0..100{h.frame(vec![]);}
+    assert!(h.app.notice.is_none());
+    assert_eq!(h.app.pet_state(),crate::pet::PetState::Working);
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(text)if text.galley.text()=="工作中")));
+    assert!(h.animating);
+    let badge=Pos2::new(WIN_W/2.0+h.app.resident.position(crate::bar_layout::AGENT),15.0);
+    h.hover(badge,1.2);
+    assert!(!h.app.open,"徽标悬停应能读到详情，不被自动展开抢走");
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(text)if text.galley.text().starts_with("本轮已用时"))));
+    h.cursor=None;
+    h.app.receive_agent_event(agent_event(Kind::Permission,"Bash","s1"));h.frame(vec![]);
+    assert_eq!(h.app.pet_state(),crate::pet::PetState::Waiting);
+    h.app.receive_agent_event(agent_event(Kind::ToolEnd,"Bash","s1"));h.frame(vec![]);
+    assert_eq!(h.app.agent_activity.primary(h.app.t).unwrap().phase,Phase::Working);
+    assert_eq!(h.app.pet_state(),crate::pet::PetState::Working);
+    h.app.pet.react(crate::pet::PetState::Satisfied);h.frame(vec![]);
+    assert_eq!(h.app.pet_state(),crate::pet::PetState::Satisfied);
+    for _ in 0..240{h.frame(vec![]);}
+    assert_eq!(h.app.pet_state(),crate::pet::PetState::Working);
+    h.app.settings.agent_notifications=false;h.frame(vec![]);
+    assert!(h.app.agent_activity.primary(h.app.t).is_none());
+    assert_eq!(h.app.pet_state(),crate::pet::PetState::Sleeping);
+}
+
+#[test]
+fn agent_activity_handles_async_questions_other_sessions_and_disabled_pet(){
+    use crate::agent_hooks::{Kind,Agent,activity::Phase};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    h.app.settings.codex_notifications=true;h.app.settings.agent_notifications=true;h.frame(vec![]);
+    let mut event=agent_event(Kind::Working,"","codex");event.agent=Agent::Codex;h.app.receive_agent_event(event.clone());
+    event.kind=Kind::QuestionAsync;event.tool="request_user_input_async".into();h.app.receive_agent_event(event.clone());
+    event.kind=Kind::ToolEnd;h.app.receive_agent_event(event.clone());
+    let session=h.app.agent_activity.primary(h.app.t).unwrap();assert!(session.working()&&session.needs_input());
+    h.app.receive_agent_event(agent_event(Kind::Working,"","claude"));
+    h.app.receive_agent_event(agent_event(Kind::Done,"","claude"));
+    assert_eq!(h.app.agent_activity.primary(h.app.t).unwrap().agent,Agent::Codex);
+    h.app.settings.pet=false;h.app.notice=None;h.app.alerts.clear();h.t+=10.0;
+    for _ in 0..100{h.frame(vec![]);}
+    assert!(h.app.agent_bar_width().is_some()&&h.animating,"关掉宠物仍显示工作指示");
+    h.app.agent_listener_unavailable(Agent::Codex);h.frame(vec![]);
+    assert_eq!(h.app.agent_activity.primary(h.app.t).unwrap().phase,Phase::Unknown);
+    h.app.settings.notifications=false;h.frame(vec![]);
+    assert!(h.app.agent_bar_width().is_none());
+}
+
+#[test]
+fn agent_activity_uses_shared_state_in_multiple_views_and_has_side_and_lyric_slots(){
+    use crate::agent_hooks::Kind;
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    h.app.settings.agent_notifications=true;h.frame(vec![]);
+    h.app.receive_agent_event(agent_event(Kind::Working,"","s1"));h.frame(vec![]);h.t+=10.0;
+    for _ in 0..80{h.frame(vec![]);}
+    h.app.ensure_view("other",egui::ViewportId::from_hash_of("other"),crate::model::AnimationRate::Standard);
+    let started=h.app.agent_activity.primary(h.app.t).unwrap().started;
+    let app=&mut h.app;let t=h.t;
+    let output=h.ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(crate::app::CANVAS_W,WIN_H))),time:Some(t),..Default::default()},|ctx|{
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx,|ui|{app.frame_view("other",ui,Rect::from_min_size(Pos2::ZERO,Vec2::new(WIN_W,WIN_H)),&Env{t,clock:"09:41:00".into(),..Default::default()});});
+    });
+    assert!(output.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(text)if text.galley.text()=="工作中")));
+    assert_eq!(h.app.agent_activity.primary(h.app.t).unwrap().started,started);
+    assert_eq!(h.app.agent_activity.sessions(h.app.t).count(),1);
+    h.app.settings.dock=crate::model::Dock::Left;
+    assert!(h.app.side_items().contains(&crate::side_dock::SideItem::Agent));
+    h.app.settings.dock=crate::model::Dock::Top;h.app.settings.island_lyrics=true;
+    h.media=crate::smtc::NowPlaying{title:"Track".into(),artist:"Artist".into(),playing:true,position:7.0,duration:120.0,playback_type:crate::smtc::MediaKind::Music,..Default::default()};
+    h.app.set_lyrics("Track","Artist",120.0,crate::lyrics::parse_lrc("[00:00]晚风吹过山岗"));
+    for _ in 0..90{h.frame(vec![]);}
+    assert!(h.app.island_lyrics_active());assert_eq!(h.app.agent_lyric_space(),32.0);
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(text)if text.galley.text()=="晚风吹过山岗")));
+    assert_eq!(h.app.pet_state(),crate::pet::PetState::Working);
+}
+
+#[test]
+fn agent_activity_minimal_indicator_keeps_the_small_shape(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    h.app.settings.agent_notifications=true;h.app.settings.minimal=true;h.frame(vec![]);
+    h.app.receive_agent_event(agent_event(crate::agent_hooks::Kind::Working,"","s1"));h.frame(vec![]);h.t+=10.0;
+    for _ in 0..100{h.frame(vec![]);}
+    assert!((h.app.current_width()-crate::app::BAR_W_MIN).abs()<0.5);
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Circle(circle)if circle.fill==crate::theme::CYAN)));
+    assert!(h.animating);
+}
+
+#[test]
+#[ignore="按需导出 Agent 常驻状态和宠物联动的实际画面"]
+fn agent_activity_gallery(){
+    use crate::agent_hooks::{Agent,Kind};use crate::model::{Skin,IslandShape};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("OCTOPUS_ISLAND_AGENT_ACTIVITY_PREVIEW").expect("需指定预览目录"));std::fs::create_dir_all(&dest).unwrap();
+    for (name,agent,kind,skin,shape,second) in [
+        ("codex-working",Agent::Codex,Kind::Working,Skin::Classic,IslandShape::Pill,false),
+        ("claude-working",Agent::ClaudeCode,Kind::Working,Skin::Classic,IslandShape::Pill,false),
+        ("codex-waiting",Agent::Codex,Kind::Permission,Skin::Classic,IslandShape::Pill,false),
+        ("codex-async",Agent::Codex,Kind::QuestionAsync,Skin::Classic,IslandShape::Pill,false),
+        ("two-sessions",Agent::Codex,Kind::Working,Skin::Classic,IslandShape::Pill,true),
+        ("cream-working",Agent::Codex,Kind::Working,Skin::Cream,IslandShape::Pill,false),
+        ("glass-waiting",Agent::ClaudeCode,Kind::Permission,Skin::GlassLight,IslandShape::Notch,false),
+        ("glass-dark-working",Agent::Codex,Kind::Working,Skin::GlassDark,IslandShape::Pill,false),
+        ("fluid-working",Agent::ClaudeCode,Kind::Working,Skin::Fluid,IslandShape::Pill,false),
+    ]{
+        let mut h=H::new();h.app.settings.skin=skin;h.app.settings.island_shape=shape;h.app.settings.agent_notifications=true;h.app.settings.codex_notifications=true;
+        h.frame(vec![]);let mut event=agent_event(Kind::Working,"","s1");event.agent=agent;h.app.receive_agent_event(event.clone());
+        if kind!=Kind::Working{event.kind=kind;event.tool="Bash".into();h.app.receive_agent_event(event);}
+        if second{h.app.receive_agent_event(agent_event(Kind::Working,"","s2"));}
+        h.app.notice=None;h.app.alerts.clear();h.t=137.0;
+        let mut raster=feature_raster();shoot_feature(&mut h,&mut raster,&dest,name,100,None,"2026-11-16");
+        if name=="codex-working"{
+            let point=Pos2::new(WIN_W/2.0+h.app.resident.position(crate::bar_layout::AGENT),21.0);
+            shoot_feature(&mut h,&mut raster,&dest,"details",100,Some(point),"2026-11-16");
+            h.app.settings.minimal=true;shoot_feature(&mut h,&mut raster,&dest,"minimal",100,None,"2026-11-16");h.app.settings.minimal=false;
+            let mut event=agent_event(Kind::Done,"","s1");event.agent=agent;h.app.receive_agent_event(event);h.app.notice=None;h.app.alerts.clear();
+            shoot_feature(&mut h,&mut raster,&dest,"finished",70,None,"2026-11-16");
+        }
+    }
+}
+
+#[test]
+fn agent_states_replace_each_other_and_respect_the_switches(){
+    use crate::agent_hooks::Kind;
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.frame(vec![]);
+    h.app.receive_agent_event(agent_event(Kind::Working,"","s1"));assert!(h.app.alerts.is_empty(),"默认关闭");
+    h.app.settings.agent_notifications=true;
+    h.app.settings.save();assert!(crate::model::Settings::load().agent_notifications);
+
+    h.app.receive_agent_event(agent_event(Kind::Working,"","s1"));h.app.tick_alerts();
+    let notice=h.app.notice.clone().unwrap();
+    assert_eq!((notice.title.as_str(),notice.body.as_str()),("Claude Code · Octopus-Island","已收到 · 正在处理"));
+    assert!(h.app.history.is_empty()&&h.app.pending.is_empty(),"不进历史，也不发系统通知");
+
+    // 同一会话的新状态原地替换，不排队逐条播放。
+    h.app.receive_agent_event(agent_event(Kind::Permission,"Bash","s1"));
+    assert!(h.app.alerts.is_empty());assert_eq!(h.app.notice.as_ref().unwrap().body,"等你授权 · Bash");
+    // 同一次授权还会触发一条不带工具名的通知，不覆盖已有详情。
+    h.app.receive_agent_event(agent_event(Kind::Permission,"","s1"));
+    assert!(h.app.alerts.is_empty());assert_eq!(h.app.notice.as_ref().unwrap().body,"等你授权 · Bash");
+    // 过了一阵再来的无工具名授权是新的一次，照常显示。
+    h.app.t+=7.0;h.app.receive_agent_event(agent_event(Kind::Permission,"","s1"));
+    assert_eq!(h.app.notice.as_ref().unwrap().body,"等你授权");
+
+    for (kind,body) in [(Kind::Question,"有问题等你选择"),(Kind::Plan,"计划已写好 · 等你确认"),(Kind::Done,"本轮结束 · 等你回复"),(Kind::Idle,"还在等你回复")]{
+        h.app.receive_agent_event(agent_event(kind,"","s1"));assert_eq!(h.app.notice.as_ref().unwrap().body,body);
+    }
+    h.frame(vec![]);
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="还在等你回复")),"岛上显示状态文字");
+
+    // 会话退出后收起它的提示。
+    h.app.receive_agent_event(agent_event(Kind::End,"","s1"));assert!(h.app.notice.is_none()&&h.app.alerts.is_empty());
+
+    h.app.receive_agent_event(agent_event(Kind::Done,"","s1"));h.app.tick_alerts();assert!(h.app.notice.is_some());
+    h.app.settings.agent_notifications=false;h.app.tick_alerts();assert!(h.app.notice.is_none(),"关闭开关后立即收起");
+    h.app.settings.agent_notifications=true;h.app.settings.notifications=false;
+    h.app.receive_agent_event(agent_event(Kind::Done,"","s1"));assert!(h.app.alerts.is_empty(),"提醒总开关优先");
+}
+
+#[test]
+fn codex_agent_notifications_are_independent_and_keep_same_project_sessions_separate(){
+    use crate::agent_hooks::{Agent,Kind};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.frame(vec![]);
+    let event=|agent,kind,tool,session|{let mut event=agent_event(kind,tool,session);event.agent=agent;event};
+    assert!(!h.app.settings.agent_notifications && !h.app.settings.codex_notifications);
+    h.app.settings.set_agent_enabled(Agent::Codex,true);
+    h.app.settings.save();let loaded=crate::model::Settings::load();
+    assert!(loaded.codex_notifications && !loaded.agent_notifications,"两种助手各自保存开关");
+    h.app.receive_agent_event(event(Agent::ClaudeCode,Kind::Done,"","s1"));
+    assert!(h.app.alerts.is_empty(),"Codex 开关不能开启 Claude 提醒");
+
+    h.app.receive_agent_event(event(Agent::Codex,Kind::Working,"","s1"));h.app.tick_alerts();
+    assert_eq!(h.app.notice.as_ref().unwrap().title,"Codex · Octopus-Island");
+    h.app.receive_agent_event(event(Agent::Codex,Kind::Permission,"Bash","s2"));
+    assert_eq!(h.app.notice.as_ref().unwrap().body,"已收到 · 正在处理");
+    assert_eq!(h.app.alerts.len(),1,"同一项目的另一个会话单独排队");
+    h.app.receive_agent_event(event(Agent::Codex,Kind::End,"","s1"));h.app.tick_alerts();
+    assert_eq!(h.app.notice.as_ref().unwrap().body,"等你授权 · Bash","退出 s1 不清除 s2");
+
+    h.app.settings.set_agent_enabled(Agent::ClaudeCode,true);
+    h.app.receive_agent_event(event(Agent::ClaudeCode,Kind::Permission,"","s2"));
+    assert_eq!(h.app.alerts.len(),1,"不同助手即使会话 ID 相同，也不合并去重");
+    h.app.receive_agent_event(event(Agent::ClaudeCode,Kind::End,"","s2"));
+    assert!(h.app.alerts.is_empty());assert_eq!(h.app.notice.as_ref().unwrap().body,"等你授权 · Bash");
+    h.app.receive_agent_event(event(Agent::Codex,Kind::Question,"","s2"));
+    assert_eq!(h.app.notice.as_ref().unwrap().body,"有问题等你选择");
+    h.app.receive_agent_event(event(Agent::Codex,Kind::Interrupted,"","s2"));
+    h.frame(vec![]);
+    assert!(h.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(text)if text.galley.text()=="已中断 · 等你继续")));
+    assert!(h.app.history.is_empty() && h.app.pending.is_empty());
+
+    h.app.settings.set_agent_enabled(Agent::ClaudeCode,false);h.app.tick_alerts();
+    assert!(h.app.notice.is_some(),"关闭 Claude 不影响 Codex");
+    h.app.settings.set_agent_enabled(Agent::Codex,false);h.app.tick_alerts();
+    assert!(h.app.notice.is_none(),"关闭 Codex 清除对应提示");
+    h.app.settings.set_agent_enabled(Agent::Codex,true);h.app.settings.notifications=false;
+    h.app.receive_agent_event(event(Agent::Codex,Kind::Done,"","s2"));assert!(h.app.alerts.is_empty());
+}
+
+#[test]
+#[ignore="按需导出 Claude Code / Codex 状态提醒的实际画面"]
+fn agent_notice_gallery(){
+    use crate::agent_hooks::{Agent,Kind};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("OCTOPUS_ISLAND_AGENT_NOTICE_PREVIEW").expect("需指定预览目录"));std::fs::create_dir_all(&dest).unwrap();
+    for (agent,skin,prefix) in [(Agent::ClaudeCode,crate::model::Skin::Classic,"claude"),(Agent::Codex,crate::model::Skin::Classic,"codex"),(Agent::Codex,crate::model::Skin::Cream,"codex-cream")]{
+    for (name,kind,tool,lyrics) in [("1-开始处理",Kind::Working,"",false),("2-等你授权",Kind::Permission,"Bash",false),("3-等你选择",Kind::Question,"",false),("4-已完成",Kind::Done,"",false),("5-歌词模式-等你授权",Kind::Permission,"Bash",true),("6-已中断",Kind::Interrupted,"",false)]{
+        if agent==Agent::ClaudeCode && kind==Kind::Interrupted{continue;}
+        let mut h=H::new();h.app.settings.set_agent_enabled(agent,true);h.app.settings.island_lyrics=lyrics;h.app.settings.skin=skin;
+        if lyrics{
+            h.media=crate::smtc::NowPlaying{title:"Track".into(),artist:"Artist".into(),playing:true,position:7.0,duration:120.0,..Default::default()};
+            h.app.set_lyrics("Track","Artist",120.0,crate::lyrics::parse_lrc("[00:00]晚风吹过了山岗"));
+        }
+        let mut raster=crate::preview_raster::Raster::new(1440,405);
+        for frame in 0..90{
+            if frame==30{let mut event=agent_event(kind,tool,"s1");event.agent=agent;h.app.receive_agent_event(event);}
+            let t=frame as f64/60.0;
+            let env=Env{t,clock:"09:41:00".into(),media:h.media.clone(),..Default::default()};
+            let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(crate::app::CANVAS_W,WIN_H))),time:Some(t),viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(1.5),..Default::default()})).collect(),..Default::default()};
+            let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx,|ui|{h.app.frame(ui,Rect::from_min_size(Pos2::ZERO,Vec2::new(WIN_W,WIN_H)),&env);});});
+            raster.update_textures(&output.textures_delta);
+            if frame==89{
+                raster.buf.fill([0.94,0.95,0.97,1.0]);raster.draw(&h.ctx.tessellate(output.shapes,output.pixels_per_point),output.pixels_per_point);
+                let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);let image=image::RgbaImage::from_raw(1440,405,rgba).unwrap();
+                image::imageops::crop_imm(&image,105,0,960,150).to_image().save(dest.join(format!("{prefix}-{name}.png"))).unwrap();
+            }
+            raster.free_textures(&output.textures_delta);
+        }
+    }
     }
 }

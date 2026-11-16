@@ -6,7 +6,10 @@ use crate::theme::{self, size, W};
 use eframe::egui::{self, Color32, Rect};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AlertSource { Internal, Wechat, External(String) }
+pub(crate) enum AlertSource {
+    Internal, Wechat, External(String),
+    Agent { agent:crate::agent_hooks::Agent, kind:crate::agent_hooks::Kind, session:String },
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct Alert {
@@ -60,6 +63,31 @@ pub(crate) fn device_icon(c: &Card, kind: crate::bt::DeviceKind, x: f32, y: f32,
 }
 
 pub(crate) use crate::pet::PetState;
+
+/// 等用户处理时的强调色。
+pub(crate) const AGENT_WAITING:Color32=Color32::from_rgb(255,176,64);
+/// AI 编程助手的标识：按固定分辨率栅格化一次，弹出动画期间只缩放绘制矩形。
+pub(crate) fn agent_logo(c:&Card,agent:crate::agent_hooks::Agent,x:f32,y:f32,size:f32){
+    let ctx=c.ui.ctx();let pixels=(size*ctx.pixels_per_point()).round().max(1.0) as u32;
+    let key=egui::Id::new(("agent-logo",agent.label(),pixels));
+    let texture=ctx.data_mut(|data|data.get_temp::<egui::TextureHandle>(key)).or_else(||{
+        // 图标来自 LobeHub Icons，保留官方配色。
+        let bytes:&[u8]=match agent{
+            crate::agent_hooks::Agent::ClaudeCode=>include_bytes!("../assets/ai-icons/claudecode.svg"),
+            crate::agent_hooks::Agent::Codex=>include_bytes!("../assets/ai-icons/codex.svg"),
+        };
+        let image=egui_extras::image::load_svg_bytes_with_size(bytes,Some(egui::load::SizeHint::Size(pixels,pixels))).ok()?;
+        let texture=ctx.load_texture(format!("agent-logo-{}-{pixels}",agent.label()),image,egui::TextureOptions::LINEAR);
+        match agent {
+            crate::agent_hooks::Agent::ClaudeCode=>crate::skin_paint::mark_colored(texture.id()),
+            crate::agent_hooks::Agent::Codex=>crate::skin_paint::mark_monochrome(texture.id()),
+        }
+        ctx.data_mut(|data|data.insert_temp(key,texture.clone()));Some(texture)
+    });
+    let Some(texture)=texture else{return};
+    let rect=Rect::from_center_size(c.pos(x,y),egui::Vec2::splat(size*c.s));
+    c.painter.image(texture.id(),rect,Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),Color32::WHITE);
+}
 
 pub(crate) fn notice_badge(c:&Card,x:f32,y:f32,a:&Alert){
     if a.source==AlertSource::Internal && a.title=="蓝牙设备"{
@@ -172,6 +200,8 @@ impl App {
             state
         } else if self.pet.waking_until > self.t {
             PetState::Waking
+        } else if let Some(state)=self.agent_pet_state() {
+            state
         } else if self.pomo.running && self.pomo.phase == Phase::Focus {
             PetState::Focused
         } else if self.pet.worried {
@@ -244,9 +274,12 @@ impl App {
                 self.pending
                     .push(Cmd::Notify(a.title.clone(), a.body.clone()));
             }
+            // 同一个助手会话的新状态直接替换旧状态，不排队逐条播放。
+            let same_agent=|old:&Alert|matches!((&old.source,&a.source),
+                (AlertSource::Agent{agent:x,session:s1,..},AlertSource::Agent{agent:y,session:s2,..}) if x==y && s1==s2);
             let same_event=|old:&Alert| match (&a.meeting,&old.meeting) {
                 (Some((next,_)),Some((previous,_)))=>crate::calendar::dedupe_key(next)==crate::calendar::dedupe_key(previous),
-                _=>old.source==a.source && old.title==a.title && (a.is_hud() || old.body==a.body),
+                _=>same_agent(old) || old.source==a.source && old.title==a.title && (a.is_hud() || old.body==a.body),
             };
             if a.source!=AlertSource::Internal || a.title != "蓝牙设备" { self.alerts.retain(|old| !same_event(old)); }
             if (a.source!=AlertSource::Internal || a.title != "蓝牙设备") && self.notice.as_ref().is_some_and(same_event) {
@@ -309,6 +342,49 @@ impl App {
         }else{"收到新通知 · 内容已隐藏".into()};
         self.enqueue_alert(Alert{source:AlertSource::External(id),title,body,page:usize::MAX,at:self.t,duration:4.5,bluetooth:None,meeting:None},false);
     }
+    /// Claude Code 等助手通过 hooks 报告的状态变化。
+    pub fn receive_agent_event(&mut self,event:crate::agent_hooks::Event){
+        use crate::agent_hooks::Kind;
+        if !self.settings.agent_enabled(event.agent) || !self.settings.notifications{return;}
+        if !self.agent_activity.receive(&event,self.t){return;}
+        if matches!(event.kind,Kind::ToolStart|Kind::ToolEnd){
+            let waiting=self.agent_activity.sessions(self.t).any(|session|session.agent==event.agent&&session.id==event.session&&session.phase==crate::agent_hooks::activity::Phase::Waiting);
+            if !waiting {
+                let stale=|a:&Alert|matches!(&a.source,AlertSource::Agent{agent,session,kind} if *agent==event.agent&&*session==event.session&&kind.waiting()&&*kind!=Kind::QuestionAsync);
+                self.alerts.retain(|a|!stale(a));if self.notice.as_ref().is_some_and(stale){self.notice=None;}
+            }
+            return;
+        }
+        if event.kind==Kind::Done && self.pet.reaction.is_none(){self.pet.react(PetState::Happy);}
+        let title=if event.project.is_empty(){event.agent.label().to_string()}else{format!("{} · {}",event.agent.label(),event.project)};
+        let previous=self.agent_recent.iter().position(|(agent,session,..)|*agent==event.agent && *session==event.session).map(|i|self.agent_recent.remove(i));
+        if event.kind==Kind::End {
+            let ended=|a:&Alert|matches!(&a.source,AlertSource::Agent{agent,session,..} if *agent==event.agent && *session==event.session);
+            self.alerts.retain(|a|!ended(a));
+            if self.notice.as_ref().is_some_and(ended){self.notice=None;}
+            return;
+        }
+        // 授权弹窗会同时触发「请求授权」和「通知」两个 hook；后到的通知不带工具名，不覆盖已显示的详情。
+        if event.kind==Kind::Permission && event.tool.is_empty() {
+            if let Some(shown)=previous.filter(|(_,_,kind,at)|kind.waiting() && self.t-at<6.0){self.agent_recent.push(shown);return;}
+        }
+        self.agent_recent.push((event.agent,event.session.clone(),event.kind,self.t));
+        if self.agent_recent.len()>32{self.agent_recent.remove(0);}
+        let (body,duration)=match event.kind {
+            Kind::Working=>("已收到 · 正在处理".to_string(),2.5),
+            Kind::Permission if event.tool.is_empty()=>("等你授权".to_string(),8.0),
+            Kind::Permission=>(format!("等你授权 · {}",event.tool),8.0),
+            Kind::Question=>("有问题等你选择".to_string(),8.0),
+            Kind::QuestionAsync=>("有问题等你回复 · 正在继续工作".to_string(),5.0),
+            Kind::Plan=>("计划已写好 · 等你确认".to_string(),8.0),
+            Kind::Done=>("本轮结束 · 等你回复".to_string(),5.0),
+            Kind::Idle=>("还在等你回复".to_string(),5.0),
+            Kind::Interrupted=>("已中断 · 等你继续".to_string(),5.0),
+            Kind::Failed=>("本轮出错 · 请查看助手".to_string(),5.0),
+            Kind::End|Kind::ToolStart|Kind::ToolEnd=>return,
+        };
+        self.enqueue_alert(Alert{source:AlertSource::Agent{agent:event.agent,kind:event.kind,session:event.session},title,body,page:usize::MAX,at:self.t,duration,bluetooth:None,meeting:None},false);
+    }
     pub(crate) fn tick_alerts(&mut self) {
         self.pending_messengers.retain(|u|self.settings.notifications && match u.source {
             crate::app::Messenger::Wechat=>self.settings.wechat_notifications,
@@ -318,6 +394,7 @@ impl App {
             AlertSource::Internal=>true,
             AlertSource::Wechat=>self.settings.wechat_notifications && self.settings.notifications,
             AlertSource::External(id)=>self.settings.read_notifications && (!self.settings.qq_only || id=="QQ") && self.settings.notifications && self.notification_apps.items.iter().any(|(key,_,on)|key==id && *on),
+            AlertSource::Agent{agent,..}=>self.settings.agent_enabled(*agent) && self.settings.notifications,
         };
         self.alerts.retain(&allowed);
         if self.notice.as_ref().is_some_and(|a|!allowed(a)){self.notice=None;}
@@ -350,6 +427,17 @@ impl App {
             nc.centered_text(44.0,30.0,&nc.fit(&a.body,10.5,W::Regular,154.0),10.5,W::Regular,theme::GRAY,H::Left);
             if notice_button(&nc,206.0,12.0,52.0,"查看","messenger-view"){_cmds.push(Cmd::ViewMessenger(self.latest_unread(source)));}
             if notice_button(&nc,265.0,12.0,52.0,"关闭","messenger-dismiss"){self.notice=None;self.notification_bell_until=0.0;}
+            return;
+        }
+        if let AlertSource::Agent{agent,kind,..}=&a.source {
+            // 文字在中间，助手标识从右侧弹出；等用户处理的状态用强调色并加一个提示点。
+            let ink=if kind.waiting(){AGENT_WAITING}else if *kind==crate::agent_hooks::Kind::Done{theme::GREEN}else{theme::GRAY};
+            nc.centered_text(16.0,14.0,&nc.fit(&a.title,11.0,W::Semibold,262.0),11.0,W::Semibold,theme::WHITE,H::Left);
+            nc.centered_text(16.0,30.0,&nc.fit(&a.body,10.5,W::Regular,262.0),10.5,W::Regular,ink,H::Left);
+            let q=((self.t-a.at)/0.32).clamp(0.0,1.0) as f32-1.0;
+            let pop=(1.0+2.4*q*q*q+1.4*q*q).max(0.0);
+            agent_logo(&nc.scaled(306.0,22.0,pop),*agent,306.0,22.0,24.0);
+            if kind.waiting(){nc.scaled(316.0,11.0,pop).circle(316.0,11.0,2.8,AGENT_WAITING);}
             return;
         }
         if a.source!=AlertSource::Internal {
@@ -1463,6 +1551,28 @@ impl App {
                             let before_apps=self.notification_apps.items.clone();
                             for (_,name,enabled) in &mut self.notification_apps.items {setting_row(ui,name,"",enabled);}
                             if before_apps!=self.notification_apps.items{self.notification_apps.save();}
+                            });
+                        });
+                        settings_label(ui,"AI 编程助手");
+                        settings_card(ui,|ui|{
+                            master_hint(ui);
+                            ui.add_enabled_ui(master,|ui|{
+                            for agent in crate::agent_hooks::Agent::ALL {
+                                let before=self.settings.agent_enabled(agent);
+                                let mut enabled=before;
+                                let description=match agent {
+                                    crate::agent_hooks::Agent::ClaudeCode=>"工作时常驻显示状态，宠物同步专注或等待；悬停查看项目和用时。不读取提示词与回复内容。",
+                                    crate::agent_hooks::Agent::Codex=>"工作时常驻显示状态，异步提问时继续显示忙碌。接入或更新后，在 Codex 的 /hooks 中审阅并信任新增条目，再重新打开会话。",
+                                };
+                                setting_row(ui,&format!("{} 状态提醒",agent.label()),description,&mut enabled);
+                                if enabled!=before {
+                                    self.settings.set_agent_enabled(agent,enabled);
+                                    self.pending.push(Cmd::SetAgentHooks(agent,enabled));
+                                }
+                                if let Some(status)=self.agent_status.get(&agent).filter(|status|!status.is_empty()) {
+                                    ui.label(egui::RichText::new(status).size(12.0));
+                                }
+                            }
                             });
                         });
                     }
