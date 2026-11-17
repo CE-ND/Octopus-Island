@@ -3,6 +3,13 @@ use crate::{app::{App, Cmd, Env, CALENDAR_PAGE}, calendar, mail, paint::{self,Ca
 use chrono::{Datelike, NaiveDate};
 use eframe::egui::{self,Color32};
 
+/// 统一展开高度下，右侧日程列表一屏可见的条数与底部边界。
+pub(crate) const CALENDAR_LIST_ROWS: usize = 2;
+pub(crate) const CALENDAR_BODY_BOTTOM: f32 = crate::app::EXPANDED_H-8.0;
+/// 月历仍显示完整六周，只收紧行距，不缩小日期字体。
+pub(crate) const CALENDAR_GRID_TOP: f32 = 62.0;
+pub(crate) const CALENDAR_GRID_ROW_H: f32 = (crate::app::EXPANDED_H-CALENDAR_GRID_TOP-18.0)/5.0;
+
 pub(crate) struct State {
     pub month: NaiveDate,
     pub day: NaiveDate,
@@ -193,7 +200,7 @@ impl App {
         let events:Vec<_>=self.calendar_entries(self.calendar.view.day).into_iter()
             .filter(|entry|self.calendar.view.show_ended || !has_ended(entry.event,now)).collect();
         let featured=featured_index(&events,self.calendar.view.focus.as_deref(),now).is_some();
-        events.len().saturating_sub(usize::from(featured)+4)
+        events.len().saturating_sub(usize::from(featured)+CALENDAR_LIST_ROWS)
     }
 
     pub(crate) fn mail_event_ignored(&self,event:&mail::Meeting)->bool {
@@ -277,22 +284,18 @@ impl App {
         let (add,b)=paint::capsule(c,101.0,9.0,46.0,18.0,"calendar-add-local",theme::BTN,theme::BTN_HOVER);
         b.centered_text(124.0,18.0,"＋ 新增",9.0,W::Regular,theme::WHITE,H::Center);
         if add.clicked(){self.open_calendar_editor(None);return;}
-        c.seg((155.0,36.0),(155.0,208.0),0.6,Color32::from_gray(38));
-        let day=self.calendar.view.day;
-        let weekday=["星期一","星期二","星期三","星期四","星期五","星期六","星期日"][day.weekday().num_days_from_monday() as usize];
-        c.text(40.0,42.0,weekday,9.0,W::Regular,accent,H::Left);
-        c.text(40.0,61.0,&format!("{}月{}日",day.month(),day.day()),14.0,W::Semibold,theme::WHITE,H::Left);
+        c.seg((155.0,36.0),(155.0,CALENDAR_BODY_BOTTOM),0.6,Color32::from_gray(38));
         let month=self.calendar.view.month;
-        c.centered_text(45.0,80.0,"‹",14.0,W::Regular,muted,H::Center);
-        c.centered_text(87.0,80.0,&format!("{}年{}月",month.year(),month.month()),9.5,W::Regular,theme::GRAY,H::Center);
-        c.centered_text(129.0,80.0,"›",14.0,W::Regular,muted,H::Center);
-        for (x,next) in [(38.0,false),(122.0,true)] {
-            if c.hit(x,72.0,14.0,16.0,("calendar-month",next)).clicked(){
+        c.centered_text(45.0,35.0,"‹",14.0,W::Regular,muted,H::Center);
+        c.centered_text(91.0,35.0,&format!("{}年{}月",month.year(),month.month()),9.5,W::Regular,theme::GRAY,H::Center);
+        c.centered_text(139.0,35.0,"›",14.0,W::Regular,muted,H::Center);
+        for (x,next) in [(38.0,false),(132.0,true)] {
+            if c.hit(x,28.0,14.0,14.0,("calendar-month",next)).clicked(){
                 let date=if next{month.checked_add_months(chrono::Months::new(1))}else{month.checked_sub_months(chrono::Months::new(1))};
                 if let Some(date)=date{self.select_calendar_day(date);}
             }
         }
-        for (i,label) in ["一","二","三","四","五","六","日"].iter().enumerate(){c.centered_text(34.0+i as f32*17.5,98.0,label,9.0,W::Regular,muted,H::Center);}
+        for (i,label) in ["一","二","三","四","五","六","日"].iter().enumerate(){c.centered_text(43.0+i as f32*16.0,49.0,label,9.0,W::Regular,muted,H::Center);}
         let work=self.calendar_work_events(Some(self.calendar.view.month)).into_iter().map(|(event,provider)|(event,Source::Calendar(provider)));
         let mail=self.mail.recent.iter().filter_map(|item|item.meeting.as_ref().filter(|event|!self.mail_event_ignored(event)).map(|event|(event,Source::Mail(item.account.as_str()))));
         let grid=calendar::month_grid(self.calendar.view.month);
@@ -307,14 +310,14 @@ impl App {
         }
         let dots:std::collections::HashMap<_,_>=dots.into_iter().map(|(date,sources)|(date,marker_colors(&sources))).collect();
         for (i,date) in grid.iter().enumerate() {
-            let x=34.0+(i%7) as f32*17.5;let y=114.0+(i/7) as f32*16.5;
+            let x=43.0+(i%7) as f32*16.0;let y=CALENDAR_GRID_TOP+(i/7) as f32*CALENDAR_GRID_ROW_H;
             let selected=*date==self.calendar.view.day;
-            let hit=c.hit(x-8.75,y-7.0,17.5,16.5,("calendar-day",date));
-            if selected || hit.hovered(){c.circle(x,y-0.6,6.3,if selected{accent}else{Color32::from_gray(36)});}
-            if *date==today && !selected{c.ring(x,y-0.6,6.3,0.8,accent);}
+            let hit=c.hit(x-8.0,y-CALENDAR_GRID_ROW_H/2.0,16.0,CALENDAR_GRID_ROW_H,("calendar-day",date));
+            if selected || hit.hovered(){c.circle(x,y-0.6,5.5,if selected{accent}else{Color32::from_gray(36)});}
+            if *date==today && !selected{c.ring(x,y-0.6,5.5,0.8,accent);}
             let color=if selected{theme::WHITE}else if date.month()!=self.calendar.view.month.month(){Color32::from_gray(82)}else{Color32::from_gray(219)};
             c.centered_text(x,y,&date.day().to_string(),10.2,W::Regular,color,H::Center);
-            if let Some(colors)=dots.get(date){for (i,color) in colors.iter().enumerate(){c.circle(x+(i as f32-(colors.len()-1) as f32/2.0)*2.8,y+8.6,0.9,*color);}}
+            if let Some(colors)=dots.get(date){for (i,color) in colors.iter().enumerate(){c.circle(x+(i as f32-(colors.len()-1) as f32/2.0)*2.8,y+5.8,0.8,*color);}}
             if hit.on_hover_text(date.format("%Y年%m月%d日").to_string()).clicked(){self.select_calendar_day(*date);}
         }
         let day=self.calendar.view.day;
@@ -335,7 +338,7 @@ impl App {
         let mut connect=false;let mut add_local=false;let mut toggle_ended=false;
         let featured_index=featured_index(&events,focus.as_deref(),now);
         let remaining_count=events.len()-usize::from(featured_index.is_some());
-        let max=remaining_count.saturating_sub(4);
+        let max=remaining_count.saturating_sub(CALENDAR_LIST_ROWS);
         if scroll_to_focus {first=0;}
         first=first.min(max);
         if featured_index.is_none() {
@@ -357,26 +360,26 @@ impl App {
         }
         let mut clicked=None;let mut ignored=None;let mut edit_local=None;
         let featured=featured_index.and_then(|i|events.get(i)).into_iter().map(|entry|(entry,true));
-        let remaining=events.iter().enumerate().filter(|(index,_)|Some(*index)!=featured_index).map(|(_,entry)|(entry,false)).skip(first).take(4);
+        let remaining=events.iter().enumerate().filter(|(index,_)|Some(*index)!=featured_index).map(|(_,entry)|(entry,false)).skip(first).take(CALENDAR_LIST_ROWS);
         for (i,(entry,featured)) in featured.chain(remaining).enumerate() {
             let event=entry.event;
-            let (y,height,cy,size,mut x,icon_size)=if featured{(52.0,68.0,93.0,14.0,168.0,16.0)}else{let y=130.0+(i-usize::from(featured_index.is_some())) as f32*18.8;(y,18.8,y+8.0,10.2,204.0,13.0)};
+            let (y,height,cy,size,mut x,icon_size)=if featured{(48.0,44.0,83.0,14.0,168.0,13.0)}else{let y=96.0+(i-usize::from(featured_index.is_some())) as f32*16.0;(y,16.0,y+8.0,10.2,204.0,13.0)};
             let selected=focus.as_deref()==Some(entry_key(event).as_str());
             let hit=c.hit(164.0,y,214.0,height,("calendar-event",entry_key(event)));
             if selected || hit.hovered(){c.fill(164.0,y,214.0,height,5.0,Color32::from_gray(if selected{29}else{20}));}
             let time=if event.all_day{"全天".to_string()}else if event_day(event)!=Some(day){"跨天".to_string()}else{chrono::DateTime::from_timestamp(event.start,0).unwrap().with_timezone(&chrono::Local).format("%H:%M").to_string()};
             if featured {
-                c.centered_text(167.0,68.0,&time,23.0,W::Semibold,theme::WHITE,H::Left);
+                c.centered_text(167.0,61.0,&time,23.0,W::Semibold,theme::WHITE,H::Left);
                 let status=event_status(event,now,today);
                 let width=(c.text_w(&status,7.5,W::Semibold)+14.0).max(46.0);
                 let ended=event.end.is_some_and(|end|end<=now);
-                c.fill(366.0-width,60.0,width,14.0,7.0,if ended{theme::BTN}else{Color32::from_rgb(28,48,68)});
-                c.centered_text(366.0-width/2.0,67.0,&status,7.5,W::Semibold,if ended{muted}else{accent},H::Center);
+                c.fill(366.0-width,50.0,width,14.0,7.0,if ended{theme::BTN}else{Color32::from_rgb(28,48,68)});
+                c.centered_text(366.0-width/2.0,57.0,&status,7.5,W::Semibold,if ended{muted}else{accent},H::Center);
                 if let Some(end)=event.end.and_then(|end|chrono::DateTime::from_timestamp(end,0)).map(|end|end.with_timezone(&chrono::Local)) {
                     let label=if event.all_day {format!("截至 {}",(end-chrono::Duration::seconds(1)).format("%m-%d"))}else{format!("{} 结束",end.format(if end.date_naive()==day{"%H:%M"}else{"%m-%d %H:%M"}))};
-                    c.centered_text(168.0,110.0,&label,8.4,W::Regular,muted,H::Left);
+                    c.centered_text(248.0,68.0,&c.fit(&label,8.0,W::Regular,108.0),8.0,W::Regular,muted,H::Left);
                 }
-                c.seg((167.0,121.0),(376.0,121.0),0.6,Color32::from_gray(39));
+                c.seg((167.0,92.0),(376.0,92.0),0.6,Color32::from_gray(39));
             }else{c.centered_text(169.0,cy,&time,8.7,W::Regular,if selected{accent}else{muted},H::Left);}
             let sources=entry.sources.iter().map(|source|source.label()).collect::<Vec<_>>().join(" · ");
             let mut kinds=Vec::new();
@@ -402,7 +405,7 @@ impl App {
             }
             if hit.on_hover_text(format!("{}\n{}\n{}",event.title,event.at,sources)).clicked(){clicked=Some(entry_key(event));}
         }
-        if remaining_count>4 {c.text(376.0,208.0,&format!("列表 {}–{} / {}",first+1,(first+4).min(remaining_count),remaining_count),7.0,W::Regular,muted,H::Right);}
+        if remaining_count>CALENDAR_LIST_ROWS {c.text(376.0,self.expanded_height()-6.0,&format!("列表 {}–{} / {}",first+1,(first+CALENDAR_LIST_ROWS).min(remaining_count),remaining_count),7.0,W::Regular,muted,H::Right);}
         self.calendar.view.first=first;
         if toggle_ended{self.calendar.view.show_ended=!show_ended;self.calendar.view.first=0;}
         if let Some(key)=clicked{self.calendar.view.focus=Some(key);}

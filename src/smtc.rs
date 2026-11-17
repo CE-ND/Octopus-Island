@@ -1,5 +1,5 @@
 //! 系统媒体会话（SMTC）读取：Windows 10/11 的“正在播放”。
-//! 与原工具使用同一套 API（GlobalSystemMediaTransportControlsSessionManager）。
+//! 通过 GlobalSystemMediaTransportControlsSessionManager 读取 Windows 系统媒体会话。
 
 #[cfg(windows)]
 #[path="netease_timeline.rs"]

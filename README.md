@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="assets/octopus-island-logo.png" width="112" alt="岛仔" />
+<img src="assets/octopus-island-logo.png" width="112" alt="Octopus Island" />
 
-# 岛仔 · Octopus Island
+# Octopus Island
 
 **一座小岛，装下桌面日常。**
 
@@ -17,9 +17,9 @@ Windows 桌面伙伴，把消息、音乐、日程和 AI 额度放到手边。
 
 </div>
 
-岛仔是一款开源的 Windows 桌面小工具。平时收起在屏幕边缘，鼠标靠近就展开；切歌、看日程、复制验证码、记一条待办，都能顺手完成。小岛里的伙伴会眨眼、打盹、喝水，也会跟着音乐唱歌。
+Octopus Island 是一款开源的 Windows 桌面小工具。平时收起在屏幕边缘，鼠标靠近就展开；切歌、看日程、复制验证码、记一条待办，都能顺手完成。小岛里的伙伴会眨眼、打盹、喝水，也会跟着音乐唱歌。
 
-你可以选刘海或胶囊，放在顶部、左侧或右侧，只保留自己需要的功能。岛仔使用 Rust 和 egui 构建，不依赖 Electron。
+你可以选刘海或胶囊，放在顶部、左侧或右侧，只保留自己需要的功能。Octopus Island 使用 Rust 和 egui 构建，不依赖 Electron。
 
 ## 微信里有新消息，看一眼岛边
 
@@ -63,7 +63,7 @@ Windows 桌面伙伴，把消息、音乐、日程和 AI 额度放到手边。
 
 ![日历与会议安排、每周重复待办、番茄专注与饮水提醒](docs/images/readme/daily.webp)
 
-| 想做的事 | 岛仔能帮你 |
+| 想做的事 | Octopus Island 能帮你 |
 | --- | --- |
 | 看今天的安排 | 月历与当日时间线，合并多个日历和正式邮件邀请，提前提醒会议 |
 | 记住每周的事 | 待办支持单次提醒、每周指定日期重复或每天重复；下一次到来时恢复为待办 |
@@ -99,7 +99,7 @@ Windows 桌面伙伴，把消息、音乐、日程和 AI 额度放到手边。
 订阅额度、重置时间、套餐积分与 API 余额，按服务展示。多个账号可分别命名、选择配色，常用账号直接放在收起的小岛上。
 
 - **ZCode**：查看套餐额度。
-- **Claude**：只读取桌面版本地用量历史与缓存，或接收 Claude Code 官方状态栏输出；岛仔不使用 Claude 登录令牌，也不请求 Claude 额度接口。数据随官方客户端使用更新，桌面版缓存有效时自动显示重置时间，读取不到时显示未知。
+- **Claude**：只读取桌面版本地用量历史与缓存，或接收 Claude Code 官方状态栏输出；Octopus Island 不使用 Claude 登录令牌，也不请求 Claude 额度接口。数据随官方客户端使用更新，桌面版缓存有效时自动显示重置时间，读取不到时显示未知。
 - **WorkBuddy**：查看剩余积分；优先识别本机客户端登录，也可在默认浏览器完成授权。
 - **DeepSeek**：使用 API Key 连接，查看账户余额、充值与赠送金额。
 
@@ -148,7 +148,7 @@ QQ 收信、邮件日程和飞书个人日历已进行真实账号测试。其�
 - 微信新消息提醒根据任务栏闪动工作，不读取联系人或聊天正文；QQ 与应用通知需要相应的系统通知权限。
 - 读取已有 AI 客户端登录时不回写原客户端配置。不要把授权码、Cookie、API Key 或登录 JSON 上传到 Issue。
 - 邮箱读取收件箱，不读取垃圾邮件文件夹；邮件正文在当前进程中用于展示和识别。
-- 岛仔没有自建的邮件或日程上传后台；开启联网功能后，会访问对应服务商与歌词服务。
+- Octopus Island 没有自建的邮件或日程上传后台；开启联网功能后，会访问对应服务商与歌词服务。
 
 完整说明见 [隐私与安全](docs/PRIVACY.md)。
 
@@ -180,12 +180,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1
 
 ## 开源与致谢
 
-岛仔原创代码采用 [MIT License](LICENSE)。Rust 依赖、vendored 代码、第三方图标及品牌标识沿用各自的许可或权利声明；MIT 不授予服务商标使用权，也不代表官方合作或认证。详见 [第三方声明](THIRD_PARTY_NOTICES.txt) 和 [依赖说明](docs/DEPENDENCIES.md)。
+Octopus Island 原创代码采用 [MIT License](LICENSE)。Rust 依赖、vendored 代码、第三方图标及品牌标识沿用各自的许可或权利声明；MIT 不授予服务商标使用权，也不代表官方合作或认证。详见 [第三方声明](THIRD_PARTY_NOTICES.txt) 和 [依赖说明](docs/DEPENDENCIES.md)。
 
 「悬浮云」皮肤作者：啵（[@hanhb123](https://github.com/hanhb123)）。感谢 egui／eframe、Rust 社区，以及提供参考与素材的开源项目。
 
 ## 感谢支持
 
-![感谢支持岛仔的朋友们](docs/images/readme/supporters.webp)
+![感谢支持 Octopus Island 的朋友们](docs/images/readme/supporters.webp)
 
-喜欢岛仔的话，欢迎点一个 **Star**，也可以在 **设置 → 关于 → 支持作者** 请岛仔喝杯咖啡。
+喜欢 Octopus Island 的话，欢迎点一个 **Star**，也可以在 **设置 → 关于 → 支持作者** 请 Octopus Island 喝杯咖啡。

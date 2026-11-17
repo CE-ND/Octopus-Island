@@ -1,10 +1,9 @@
 //! Agent 常驻状态的紧凑展示；运行状态由 hooks 驱动，动画只影响表现。
 use crate::agent_hooks::{activity::Phase, Agent};
-use crate::app::{App, Env, BAR_H, WIN_W};
+use crate::app::App;
 use crate::paint::{Card, H};
 use crate::pet::PetState;
 use crate::theme::{self, W};
-use eframe::egui::{self, Rect};
 
 impl App {
     pub(crate) fn agent_bar_width(&self) -> Option<f32> {
@@ -40,52 +39,6 @@ impl App {
     }
     pub fn agent_listener_unavailable(&mut self, agent: Agent) {
         self.agent_activity.unavailable(agent, self.t);
-    }
-
-    /// 常驻徽标悬停时保持胶囊，留出时间阅读提示；其它位置仍照常展开。
-    pub(crate) fn over_agent_badge(&self, env: &Env, win: Rect, top: f32) -> bool {
-        if self.open || self.effective_minimal() || self.notice.is_some() {
-            return false;
-        }
-        let Some(cursor) = env.cursor else {
-            return false;
-        };
-        let Some(width) = self.agent_bar_width() else {
-            return false;
-        };
-        let rect = if self.side() {
-            let panel = self.island_rect(win, self.w.pos, self.h.pos);
-            let total = self.side_bar_len() - 14.0;
-            let fit = ((crate::side_dock::SIDE_H - 24.0) / (total + 14.0)).min(1.0);
-            Rect::from_center_size(
-                egui::pos2(
-                    panel.center().x,
-                    panel.center().y + (-total / 2.0 + 45.0) * fit,
-                ),
-                egui::vec2(panel.width(), 26.0 * fit),
-            )
-        } else if self.island_lyrics_active() {
-            let content_width = self.lyric_bar_width();
-            Rect::from_center_size(
-                egui::pos2(
-                    win.center().x + content_width / 2.0
-                        - self.agent_lyric_space() / 2.0
-                        - self.lyric_focus_space(),
-                    top + BAR_H / 2.0,
-                ),
-                egui::vec2(32.0, BAR_H),
-            )
-        } else {
-            let scale = ((WIN_W - 32.0) / self.resident.target.width).min(1.0);
-            Rect::from_center_size(
-                egui::pos2(
-                    win.center().x + self.resident.position(crate::bar_layout::AGENT) * scale,
-                    top + BAR_H / 2.0,
-                ),
-                egui::vec2(width * scale, BAR_H),
-            )
-        };
-        rect.contains(cursor)
     }
 
     pub(crate) fn draw_agent_badge(&self, c: &Card, cx: f32, cy: f32, compact: bool) {

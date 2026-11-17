@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot -Parent
 $id = 'OctopusIslandSetupTest' + [Guid]::NewGuid().ToString('N')
-$name = '岛仔安装测试-' + $id.Substring(15,8)
+$name = 'Octopus Island 安装测试-' + $id.Substring(15,8)
 $root = Join-Path $project ('target\' + $id)
 $installed = Join-Path $root 'installed files'
 $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\' + $id
@@ -53,17 +53,40 @@ function Assert-Installed {
     } elseif ($run) { throw '未勾选自启却设置了开机启动' }
     if ((Get-Content -LiteralPath $sentinel -Raw).Trim() -ne 'keep-user-data') { throw '用户数据被修改' }
 }
+$shortcutShell = New-Object -ComObject WScript.Shell
+$desktopFolder = [IO.Path]::GetFullPath($shortcutShell.SpecialFolders.Item('Desktop'))
+$startMenuFolder = [IO.Path]::GetFullPath((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))
+$legacyDesktop = Join-Path $desktopFolder ("旧名称-$id.lnk")
+$legacyStartMenu = Join-Path $startMenuFolder ("旧名称-$id.lnk")
+$foreignDesktop = Join-Path $desktopFolder ("Other-Application-$id.lnk")
+$foreignStartMenu = Join-Path $startMenuFolder ("Other-Application-$id.lnk")
+function Rename-TestShortcut {
+    param([string]$From,[string]$To)
+    $fromPath=[IO.Path]::GetFullPath($From);$toPath=[IO.Path]::GetFullPath($To)
+    if([IO.Path]::GetDirectoryName($fromPath) -notin @($desktopFolder,$startMenuFolder) -or [IO.Path]::GetDirectoryName($toPath) -ne [IO.Path]::GetDirectoryName($fromPath)){throw '快捷方式测试改名路径超出预期范围'}
+    if(Test-Path -LiteralPath $toPath){throw '快捷方式测试目标已存在'}
+    Move-Item -LiteralPath $fromPath -Destination $toPath
+}
 try {
     Run-Setup
     Assert-Installed
     Write-Output '通过：首次安装、含空格路径、快捷方式和卸载注册'
+    Rename-TestShortcut -From (Join-Path $desktopFolder "$name.lnk") -To $legacyDesktop
+    Rename-TestShortcut -From (Join-Path $startMenuFolder "$name.lnk") -To $legacyStartMenu
+    foreach($foreignPath in @($foreignDesktop,$foreignStartMenu)){
+        if(Test-Path -LiteralPath $foreignPath){throw '其他应用快捷方式测试目标已存在'}
+        $foreignLink=$shortcutShell.CreateShortcut($foreignPath);$foreignLink.TargetPath=$fixture;$foreignLink.Save()
+    }
     Set-Content -LiteralPath (Join-Path $installed 'octopus-island.exe') -Value 'previous-version'
     Set-Content -LiteralPath (Join-Path $installed 'uninstall.ps1') -Value 'previous-uninstaller'
     Set-ItemProperty -LiteralPath $key -Name UninstallString -Value 'powershell.exe legacy-uninstall.ps1'
     Run-Setup
     Assert-Installed
     if (Test-Path -LiteralPath (Join-Path $installed 'uninstall.ps1')) { throw '旧卸载脚本未移除' }
+    if((Test-Path -LiteralPath $legacyDesktop) -or (Test-Path -LiteralPath $legacyStartMenu)){throw '升级后残留旧名称的快捷方式'}
+    if(-not(Test-Path -LiteralPath $foreignDesktop) -or -not(Test-Path -LiteralPath $foreignStartMenu)){throw '升级误删其他应用快捷方式'}
     Write-Output '通过：覆盖升级、旧脚本安装迁移、保留数据'
+    Write-Output '通过：旧名称快捷方式迁移、保留桌面选项和其他应用快捷方式'
     Run-Setup -Options @('/DESKTOP=0','/AUTOSTART=1')
     Assert-Installed -Desktop $false -AutoStart $true
     Write-Output '通过：取消桌面快捷方式、开启自启'
@@ -82,6 +105,8 @@ try {
     } finally { $mutex.Dispose() }
     Run-Setup -Options @('/AUTOSTART=1')
     Assert-Installed -AutoStart $true
+    Rename-TestShortcut -From (Join-Path $desktopFolder "$name.lnk") -To $legacyDesktop
+    Rename-TestShortcut -From (Join-Path $startMenuFolder "$name.lnk") -To $legacyStartMenu
     Set-Content -LiteralPath (Join-Path $installed 'user-file.txt') -Value 'keep-extra-file'
     # 使用原安装路径运行原生卸载器，只操作本测试的独立产品标识。
     $process = Start-Process -FilePath (Join-Path $installed 'Uninstall.exe') -ArgumentList @('/S',"_?=$installed") -WindowStyle Hidden -PassThru
@@ -90,8 +115,10 @@ try {
     if ((Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue).$id) { throw '卸载残留自启项' }
     if (-not (Test-Path -LiteralPath (Join-Path $installed 'user-file.txt'))) { throw '卸载误删额外文件' }
     if ((Get-Content -LiteralPath $sentinel -Raw).Trim() -ne 'keep-user-data') { throw '卸载误删用户数据' }
+    if((Test-Path -LiteralPath $legacyDesktop) -or (Test-Path -LiteralPath $legacyStartMenu)){throw '卸载后残留旧名称的快捷方式'}
+    if(-not(Test-Path -LiteralPath $foreignDesktop) -or -not(Test-Path -LiteralPath $foreignStartMenu)){throw '卸载误删其他应用快捷方式'}
     Write-Output '通过：原生卸载、保留用户数据和额外文件'
-    # 选了装着其他软件的共享文件夹：自动装进其中的专用子文件夹，登记大小只算岛仔自己的文件。
+    # 选了装着其他软件的共享文件夹：自动装进其中的专用子文件夹，登记大小只算 Octopus Island 自己的文件。
     $shared = Join-Path $root 'shared apps'
     New-Item -ItemType Directory -Path (Join-Path $shared 'Other App') -Force | Out-Null
     [IO.File]::WriteAllBytes((Join-Path $shared 'Other App\big.bin'), (New-Object byte[] (40MB)))
@@ -102,7 +129,7 @@ try {
     Assert-Installed
     if (Test-Path -LiteralPath (Join-Path $shared 'octopus-island.exe')) { throw '程序被直接装进了共享文件夹' }
     if ((Get-ItemProperty -LiteralPath $key).EstimatedSize -ge 40000) { throw '登记大小把共享文件夹里的其他软件算了进去' }
-    Write-Output '通过：共享文件夹自动建立专用子文件夹、登记大小只算岛仔'
+    Write-Output '通过：共享文件夹自动建立专用子文件夹、登记大小只算 Octopus Island'
     Run-Setup -UseRegisteredPath
     Assert-Installed
     Write-Output '通过：专用子文件夹原地升级'
@@ -122,5 +149,10 @@ try {
     if (-not (Test-Path -LiteralPath $key)) {
         Remove-Item -LiteralPath $sentinel
         Remove-Item -LiteralPath $data
+    }
+    foreach($testLink in @($legacyDesktop,$legacyStartMenu,$foreignDesktop,$foreignStartMenu)){
+        $resolvedLink=[IO.Path]::GetFullPath($testLink)
+        if([IO.Path]::GetDirectoryName($resolvedLink) -notin @($desktopFolder,$startMenuFolder) -or -not [IO.Path]::GetFileName($resolvedLink).Contains($id)){throw '快捷方式测试清理路径超出预期范围'}
+        if(Test-Path -LiteralPath $resolvedLink){Remove-Item -LiteralPath $resolvedLink}
     }
 }

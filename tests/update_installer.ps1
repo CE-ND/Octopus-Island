@@ -1,4 +1,4 @@
-# 使用独立目录和最小测试程序验证更新，不启动或替换日常使用的岛仔。
+﻿# 使用独立目录和最小测试程序验证更新，不启动或替换日常使用的 Octopus Island。
 param([switch]$EncryptedCache)
 $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot -Parent

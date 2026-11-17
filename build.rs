@@ -1,4 +1,4 @@
-//! 把岛仔图标作为 RT_GROUP_ICON #1 编进 exe，供 LoadImageW(hInst, 1, ...) 取用。
+//! 把应用图标作为 RT_GROUP_ICON #1 编进 exe，供 LoadImageW(hInst, 1, ...) 取用。
 //! 不引入额外依赖：直接调用 Windows SDK 的 rc.exe，把 .res 交给链接器。
 
 use std::env;

@@ -1,7 +1,7 @@
 //! 系统托盘、右键菜单与开机启动。
 //!
 //! 托盘行为：
-//! - `uID=1`，`uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP`，回调 `WM_APP+9`，提示 `岛仔`；
+//! - `uID=1`，`uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP`，回调 `WM_APP+9`，提示 `Octopus Island`；
 //! - 图标取 exe 内 `RT_GROUP_ICON #1`，按 `SM_CXSMICON` 走 `LoadImageW`；
 //! - 左键、右键都弹同一个菜单，没有双击分支；
 //! - 菜单固定中文，含设置入口，前三项每次打开现算勾选态；
@@ -31,11 +31,11 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-/// 原版的托盘回调消息。
+/// 托盘鼠标事件的回调消息。
 pub const WM_TRAY: u32 = WM_APP + 9;
-/// 仅构建并导出当前菜单状态，不弹出菜单（自动化取证用）。
+/// 仅构建并导出当前菜单状态，不弹出菜单（自动化检查用）。
 pub const WM_TRAY_DUMP: u32 = WM_APP + 2;
-/// 在屏幕坐标 (wparam, lparam) 弹出菜单（隐藏桌面取证用）。
+/// 在屏幕坐标 (wparam, lparam) 弹出菜单（桌面交互自动化检查用）。
 pub const WM_TRAY_MENU: u32 = WM_APP + 3;
 
 const TRAY_UID: u32 = 1;
@@ -60,7 +60,7 @@ pub struct State {
 
 /// 菜单固定中文：启动 / 吉祥物 / 极简 / —— / 设置 / 关于 / 退出。
 fn labels() -> [&'static str; 6] {
-    ["开机启动", "吉祥物", "极简刘海", "关于岛仔", "退出", "设置…"]
+    ["开机启动", "吉祥物", "极简刘海", "关于 Octopus Island", "退出", "设置…"]
 }
 
 struct Ctx {
@@ -108,7 +108,7 @@ fn load_resource_icon() -> Option<HICON> {
     }
 }
 
-/// 图标取不到时，直接解析内嵌的岛仔 ICO。
+/// 图标取不到时，直接解析内嵌的应用 ICO。
 fn load_embedded_icon() -> Option<HICON> {
     let ico: &[u8] = include_bytes!("../assets/octopus-island.ico");
     if ico.len() < 6 {
@@ -152,7 +152,7 @@ fn add_icon(hwnd: HWND, hicon: HICON) -> bool {
         hIcon: hicon,
         ..Default::default()
     };
-    fill_tip(&mut nid.szTip, "岛仔");
+    fill_tip(&mut nid.szTip, "Octopus Island");
     unsafe {
         if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
             // explorer 里已有同名残留时，用 MODIFY 顶掉
@@ -222,10 +222,10 @@ fn menu_items(menu: HMENU) -> Vec<(String, bool, bool)> {
 
 fn about() {
     let text = wide(&format!(
-        "岛仔 {}\n\nWindows 桌面灵动岛小助手\n退出请右键托盘图标，选择「退出」。",
+        "Octopus Island {}\n\nWindows 桌面灵动岛小助手\n退出请右键托盘图标，选择「退出」。",
         env!("CARGO_PKG_VERSION")
     ));
-    let title = wide("关于岛仔");
+    let title = wide("关于 Octopus Island");
     unsafe {
         MessageBoxW(
             None,
@@ -290,7 +290,7 @@ fn show_menu_at(hwnd: HWND, ctx: &Ctx, x: i32, y: i32) {
             CMD_SETTINGS => {let _=ctx.tx.send(Event::OpenSettings);}
             CMD_ABOUT => about(),
             CMD_EXIT => {
-                // 原版：先摘图标，再结束进程
+                // 先移除托盘图标，再结束进程。
                 remove_icon(hwnd);
                 ExitProcess(0);
             }
@@ -315,7 +315,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     let ctx = &*ctx_ptr;
     if msg == WM_TRAY {
         let mouse = (lp.0 as u32) & 0xffff;
-        // 原版左右键同一个分支，没有双击行为
+        // 左右键共用菜单入口，不单独处理双击。
         if matches!(mouse, WM_LBUTTONUP | WM_RBUTTONUP) {
             show_menu(hwnd, ctx);
         }
@@ -394,7 +394,7 @@ impl Tray {
                 let hwnd = match CreateWindowExW(
                     WS_EX_TOOLWINDOW,
                     class,
-                    w!("岛仔托盘"),
+                    w!("Octopus Island 托盘"),
                     WS_POPUP,
                     0,
                     0,
@@ -493,7 +493,7 @@ impl Drop for Tray {
     }
 }
 
-/// 单实例：已有岛仔实例时返回 false。
+/// 单实例：已有应用实例时返回 false。
 pub fn single_instance() -> bool {
     unsafe {
         match CreateMutexW(None, false, MUTEX_NAME) {
@@ -593,7 +593,7 @@ mod tests {
             assert_eq!(items.len(), 7, "6 项 + 1 分隔线");
             assert!(items[3].2, "第 4 项是分隔线");
             let texts: Vec<_> = items.iter().filter(|i| !i.2).map(|i| i.0.as_str()).collect();
-            assert_eq!(texts, ["开机启动", "吉祥物", "极简刘海", "设置…", "关于岛仔", "退出"]);
+            assert_eq!(texts, ["开机启动", "吉祥物", "极简刘海", "设置…", "关于 Octopus Island", "退出"]);
             assert_eq!([items[0].1, items[1].1, items[2].1], want, "勾选态应与状态一致");
             unsafe {
                 let _ = DestroyMenu(menu);
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn labels_are_fixed_chinese() {
-        assert_eq!(labels(), ["开机启动", "吉祥物", "极简刘海", "关于岛仔", "退出", "设置…"]);
+        assert_eq!(labels(), ["开机启动", "吉祥物", "极简刘海", "关于 Octopus Island", "退出", "设置…"]);
     }
 
     #[test]
@@ -638,7 +638,7 @@ fn request_existing_window(hwnd:HWND,calendar:bool)->bool {unsafe{
 
 pub fn activate_existing(calendar:bool)->bool {unsafe{
     let Ok(tray)=FindWindowW(w!("OctopusIslandTray"),PCWSTR::null()) else{return false;};
-    let Ok(window)=FindWindowW(PCWSTR::null(),w!("岛仔")) else{return false;};
+    let Ok(window)=FindWindowW(PCWSTR::null(),w!("Octopus Island")) else{return false;};
     let(mut tray_pid,mut window_pid)=(0,0);
     GetWindowThreadProcessId(tray,Some(&mut tray_pid));
     GetWindowThreadProcessId(window,Some(&mut window_pid));

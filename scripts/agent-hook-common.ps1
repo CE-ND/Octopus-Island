@@ -57,7 +57,7 @@ function Publish-IslandAgentEvent {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary }
     }
     if ($Kind -eq 'end' -and (Test-Path -LiteralPath $ownerPath)) { Remove-Item -LiteralPath $ownerPath }
-    # 岛仔未运行时也限制积压数量；运行时事件由监听器读后删除，空闲不启动定时扫描。
+    # 应用未运行时也限制积压数量；运行时事件由监听器读后删除，空闲不启动定时扫描。
     $pending = @([IO.Directory]::EnumerateFiles($dir, '*.event') | Select-Object -First 513)
     if ($pending.Count -gt 512) {
         Get-ChildItem -LiteralPath $dir -Filter '*.event' -File | Sort-Object LastWriteTimeUtc -Descending |

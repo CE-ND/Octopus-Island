@@ -44,7 +44,7 @@ impl eframe::App for Probe {
 
 fn main()->eframe::Result<()> {
     let wgpu=std::env::args().any(|arg|arg=="--wgpu");
-    let mut options=eframe::NativeOptions{vsync:false,viewport:egui::ViewportBuilder::default().with_title("岛仔缩放渲染检查").with_inner_size([CANVAS_W,WIN_H]).with_position([-10000.0,-10000.0]).with_active(false).with_taskbar(false),..Default::default()};
+    let mut options=eframe::NativeOptions{vsync:false,viewport:egui::ViewportBuilder::default().with_title("Octopus Island 缩放渲染检查").with_inner_size([CANVAS_W,WIN_H]).with_position([-10000.0,-10000.0]).with_active(false).with_taskbar(false),..Default::default()};
     if wgpu{
         options.renderer=eframe::Renderer::Wgpu;
         if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup)=&mut options.wgpu_options.wgpu_setup{

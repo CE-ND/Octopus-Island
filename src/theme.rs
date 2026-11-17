@@ -1,6 +1,6 @@
 //! 配色、字体与字号。
 //!
-//! 字体：拉丁/数字用 Segoe UI（Windows 原生 UI 字体，与原版 DirectWrite 渲染同源），
+//! 字体：拉丁/数字用 Segoe UI（Windows 原生 UI 字体），
 //! 中文回退到微软雅黑 UI，韩文回退到 Malgun Gothic。三档字重：常规 / 半粗 / 粗。
 //! 非 Windows（开发机、录屏）按 `OCTOPUS_ISLAND_FONT_DIR` → 常见系统路径依次查找
 //! 度量兼容的 Selawik 与 Noto Sans SC。
@@ -9,7 +9,7 @@ use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, FontId}
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-// ---------- 颜色（原版逐像素取色，少量为审美微调） ----------
+// ---------- 基础颜色与交互配色 ----------
 pub const RED: Color32 = Color32::from_rgb(242, 48, 70);
 pub const RED_TOP: Color32 = Color32::from_rgb(253, 104, 92);
 pub const BLUE: Color32 = Color32::from_rgb(62, 172, 248);
@@ -198,11 +198,11 @@ fn build_fonts()->FontDefinitions {
     fonts
 }
 
-/// 各个原生窗口统一使用岛仔品牌图标，避免回落到框架默认图标。
+/// 各个原生窗口统一使用应用品牌图标，避免回落到框架默认图标。
 pub fn app_icon()->std::sync::Arc<eframe::egui::IconData>{
     static ICON:std::sync::OnceLock<std::sync::Arc<eframe::egui::IconData>>=std::sync::OnceLock::new();
     ICON.get_or_init(||{
-        let image=image::load_from_memory(include_bytes!("../assets/octopus-island-logo.png")).expect("岛仔图标资源应有效").thumbnail(128,128).to_rgba8();
+        let image=image::load_from_memory(include_bytes!("../assets/octopus-island-logo.png")).expect("应用图标资源应有效").thumbnail(128,128).to_rgba8();
         std::sync::Arc::new(eframe::egui::IconData{width:image.width(),height:image.height(),rgba:image.into_raw()})
     }).clone()
 }

@@ -292,7 +292,7 @@ impl Shell {
                 self.extras[index].bounds = display.bounds;
                 index
             } else {
-                let title = "岛仔".to_string();
+                let title = "Octopus Island".to_string();
                 self.extras.push(IslandWindow {
                     display_id: display.id.clone(),
                     bounds: display.bounds,
@@ -539,7 +539,7 @@ impl eframe::App for Shell {
         if guarded && !self.guard_notified {
             // 资源保护熔断：停止音乐会话轮询（含封面、网易云日志）与歌词查询，保住用户电脑，重启后恢复。
             self.guard_notified=true;self.app.opts.fetch_lyrics=false;
-            self.app.alert("岛仔已暂停音乐功能","检测到资源占用异常，已暂停读取音乐信息和歌词。重启岛仔即可恢复；诊断记录在数据目录的 diagnostics 文件夹。",0,false);
+            self.app.alert("Octopus Island 已暂停音乐功能","检测到资源占用异常，已暂停读取音乐信息和歌词。重启 Octopus Island 即可恢复；诊断记录在数据目录的 diagnostics 文件夹。",0,false);
         }
         self.media_enabled.store(self.app.settings.visible_pages[0] && !guarded,std::sync::atomic::Ordering::Relaxed);
         // 设置里改了岛体大小：下一帧起主窗口按新倍率栅格化，定位逻辑随像素比变化同步调整画布。
@@ -1056,7 +1056,7 @@ mod open_path_tests {
 
     #[test]
     fn unassociated_files_offer_open_with_and_cancellation_is_normal(){
-        let path=std::env::temp_dir().join(format!("岛仔 无关联-{}.octopus-island-open-test",std::process::id()));
+        let path=std::env::temp_dir().join(format!("Octopus Island 无关联-{}.octopus-island-open-test",std::process::id()));
         std::fs::write(&path,b"fixture").unwrap();
         for cancel in [false,true]{
             let mut chosen=false;
@@ -1093,25 +1093,25 @@ mod open_path_tests {
 }
 
 fn main() -> std::process::ExitCode {
-    // 单实例（与原版同名互斥体）
+    // 单实例：已有窗口时唤起它并结束当前启动流程。
     #[cfg(windows)]
     if !octopus_island::tray::single_instance() {
         if !octopus_island::tray::activate_existing(std::env::args().any(|arg|arg=="--calendar")) {
-            diagnostics::report_at(&std::env::temp_dir().join("OctopusIsland/diagnostics"), "岛仔已在运行，但暂时无法打开窗口。\n请稍后重试；若仍无法打开，请在任务管理器的“详细信息”中结束 octopus-island.exe 后重试。", "已有实例可能正在启动或已无响应。请稍后重试；若仍无法打开，请在任务管理器的“详细信息”中结束 octopus-island.exe，再重新启动。");
+            diagnostics::report_at(&std::env::temp_dir().join("OctopusIsland/diagnostics"), "Octopus Island 已在运行，但暂时无法打开窗口。\n请稍后重试；若仍无法打开，请在任务管理器的“详细信息”中结束 octopus-island.exe 后重试。", "已有实例可能正在启动或已无响应。请稍后重试；若仍无法打开，请在任务管理器的“详细信息”中结束 octopus-island.exe，再重新启动。");
         }
         return std::process::ExitCode::SUCCESS;
     }
     if let Err(error) = octopus_island::model::initialize_data_dir() {
         // 迁移失败的日志放在临时目录，避免提前创建新目录使下次启动跳过迁移。
         diagnostics::report_at(&std::env::temp_dir().join("OctopusIsland/diagnostics"),
-            "岛仔无法准备本地数据目录。原数据已保留，请检查目录权限后重试。", &error.to_string());
+            "Octopus Island 无法准备本地数据目录。原数据已保留，请检查目录权限后重试。", &error.to_string());
         return std::process::ExitCode::FAILURE;
     }
     diagnostics::install();
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            diagnostics::report("岛仔启动或运行失败。", &error.to_string());
+            diagnostics::report("Octopus Island 启动或运行失败。", &error.to_string());
             std::process::ExitCode::FAILURE
         }
     }
@@ -1122,7 +1122,7 @@ fn run() -> eframe::Result<()> {
     std::thread::spawn(octopus_island::record_install_size);
     diagnostics::startup("初始化图形窗口");
     let viewport = egui::ViewportBuilder::default()
-        .with_title("岛仔").with_icon(octopus_island::theme::app_icon())
+        .with_title("Octopus Island").with_icon(octopus_island::theme::app_icon())
         .with_inner_size([app::CANVAS_W, app::WIN_H])
         .with_decorations(false)
         .with_transparent(true)
@@ -1132,5 +1132,5 @@ fn run() -> eframe::Result<()> {
         .with_always_on_top()
         .with_visible(false);
     let opts = eframe::NativeOptions { viewport, vsync: !cfg!(windows), ..Default::default() };
-    graphics::run(opts,|opts|eframe::run_native("岛仔", opts, Box::new(|cc| Ok(Box::new(Shell::new(cc))))))
+    graphics::run(opts,|opts|eframe::run_native("Octopus Island", opts, Box::new(|cc| Ok(Box::new(Shell::new(cc))))))
 }

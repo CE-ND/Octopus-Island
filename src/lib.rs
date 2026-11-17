@@ -1,4 +1,4 @@
-//! 岛仔：Windows 顶部「灵动岛」。
+//! Octopus Island：Windows 顶部「灵动岛」。
 //!
 //! - `app` / `pages`：与平台无关的界面与动效（外壳与录制器共用）
 //! - `anim` / `paint` / `shape` / `theme`：弹簧、矢量绘制、面板轮廓、配色字体
@@ -12,6 +12,7 @@ pub mod poll_clock;
 pub mod resources;
 pub mod agent_hooks;
 mod agent_activity;
+mod agent_page;
 pub mod anim;
 pub mod app;
 pub mod bt;

@@ -13,10 +13,10 @@ BEGIN
     BEGIN
         BLOCK "080404b0"
         BEGIN
-            VALUE "FileDescription", "岛仔"
+            VALUE "FileDescription", "Octopus Island"
             VALUE "InternalName", "OctopusIsland"
             VALUE "OriginalFilename", "octopus-island.exe"
-            VALUE "ProductName", "岛仔 Octopus Island"
+            VALUE "ProductName", "Octopus Island"
             VALUE "ProductVersion", "0.6.63"
             VALUE "FileVersion", "0.6.63"
         END

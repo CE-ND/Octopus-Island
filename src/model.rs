@@ -14,6 +14,32 @@ use std::path::{Path, PathBuf};
 
 pub use crate::data_dir::{config_dir, initialize_data_dir};
 
+/// 功能页面数量；新增页面追加在末尾，保留已保存的页面编号。
+pub const PAGE_COUNT: usize = 9;
+
+fn parse_page_order(value: &str) -> Option<[usize; PAGE_COUNT]> {
+    let mut order = value.split(',').map(str::parse::<usize>).collect::<Result<Vec<_>, _>>().ok()?;
+    if order.len() == PAGE_COUNT - 1 && (0..PAGE_COUNT - 1).all(|page| order.contains(&page)) {
+        order.push(PAGE_COUNT - 1);
+    }
+    if order.len() != PAGE_COUNT || !(0..PAGE_COUNT).all(|page| order.contains(&page)) {
+        return None;
+    }
+    order.try_into().ok()
+}
+
+fn parse_visible_pages(value: &str) -> Option<[bool; PAGE_COUNT]> {
+    if !(6..=PAGE_COUNT).contains(&value.len()) || !value.bytes().all(|byte| matches!(byte, b'0' | b'1')) {
+        return None;
+    }
+    let mut pages = [false; PAGE_COUNT];
+    for (enabled, byte) in pages.iter_mut().zip(value.bytes()) { *enabled = byte == b'1'; }
+    // 旧设置中有可见页面时开启新增页；全关闭配置仍回退到音乐页。
+    for enabled in &mut pages[value.len()..] { *enabled = value.bytes().any(|byte| byte == b'1'); }
+    if !pages.contains(&true) { pages[0] = true; }
+    Some(pages)
+}
+
 fn read_kv(path: &Path) -> Vec<(String, String)> {
     let mut out = Vec::new();
     if let Ok(text) = fs::read_to_string(path) {
@@ -283,8 +309,8 @@ pub struct Settings {
     pub browser_minimal: bool,
     pub avoid_browsers: bool,
     pub avoid_apps: Vec<(String,String)>,
-    pub visible_pages: [bool; 8],
-    pub page_order: [usize; 8],
+    pub visible_pages: [bool; PAGE_COUNT],
+    pub page_order: [usize; PAGE_COUNT],
     pub show_battery: bool,
     pub clock_12h: bool,
     pub clock_period: u8,
@@ -331,7 +357,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { display_id: String::new(), multi_display: true, skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, animation_rate: AnimationRate::Standard, display_rates: Vec::new(), settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 8], page_order: [0,1,2,3,4,5,6,7], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wechat_tray_open:false, agent_notifications:false, codex_notifications:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true }
+        Self { display_id: String::new(), multi_display: true, skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, animation_rate: AnimationRate::Standard, display_rates: Vec::new(), settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; PAGE_COUNT], page_order: std::array::from_fn(|page| page), show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wechat_tray_open:false, agent_notifications:false, codex_notifications:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true }
     }
 }
 
@@ -423,18 +449,13 @@ impl Settings {
                     if crate::bar_layout::valid_order(&order){s.resident_order=order;}
                 }
                 "page_order" => {
-                    if let Ok(order)=v.split(',').map(str::parse::<usize>).collect::<Result<Vec<_>,_>>() {
-                        if order.len()==8 && (0..8).all(|page|order.contains(&page)) {
-                            s.page_order.copy_from_slice(&order);
-                        }
-                    }
+                    if let Some(order) = parse_page_order(&v) { s.page_order = order; }
                 }
                 "clock_period" => s.clock_period = v.parse::<u8>().ok().filter(|v|*v<=2).unwrap_or(0),
                 "clock_12h" => s.clock_12h = v == "1",
                 "show_battery" => s.show_battery = v != "0",
-                "visible_pages" if (6..=8).contains(&v.len()) && v.bytes().all(|b| b==b'0' || b==b'1') => {
-                    for (enabled,value) in s.visible_pages.iter_mut().zip(v.bytes()) { *enabled=value==b'1'; }
-                    for enabled in &mut s.visible_pages[v.len()..]{*enabled=v.bytes().any(|b|b==b'1');}
+                "visible_pages" => {
+                    if let Some(pages) = parse_visible_pages(&v) { s.visible_pages = pages; }
                 }
                 "read_notifications" => s.read_notifications=v=="1",
                 "wechat_notifications" => s.wechat_notifications=v=="1",
@@ -758,8 +779,7 @@ impl Default for Water {
 }
 
 impl Water {
-    /// `water.txt` 只写原工具已知的三个键；复刻版新增的进度键写到 `water-extra.txt`，
-    /// 避免给原工具的文件引入未知键。
+    /// 饮水设置保存在 `water.txt`；当日进度和提醒状态保存在 `water-extra.txt`。
     pub fn load(today: &str) -> Self {
         let mut w = Self::default();
         for (k, v) in read_kv(&config_dir().join("water.txt")) {
@@ -786,7 +806,7 @@ impl Water {
         w.goal_ml=w.goal_ml.clamp(500,6000);
         w.bottle_ml=w.bottle_ml.clamp(50,6000);
         if w.start_day != today {
-            // 跨天重置，与原工具 start= 字段语义一致
+            // 记录日期发生变化时，重置当日饮水进度。
             w.start_day = today.to_string();
             w.drunk_ml = 0;
             w.refills = 0;
@@ -869,8 +889,7 @@ impl Shelf {
         let _ = atomic_write(&path, body.as_bytes());
     }
 
-    /// 原工具的做法：记录文件所在位置，不复制文件本体（官网说明
-    /// "the shelf remembers where your files live"）。
+    /// 保存原文件路径，不复制文件内容；移除置物记录也不会删除原文件。
     pub fn add(&mut self, src: &Path) -> std::io::Result<()> {
         if !src.exists() { return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "文件不存在")); }
         if !self.items.iter().any(|p| p == src) {
@@ -908,6 +927,27 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_page_preserves_legacy_visibility_and_appends_to_valid_page_orders() {
+        assert_eq!(Settings::default().visible_pages, [true; PAGE_COUNT]);
+        assert_eq!(Settings::default().page_order, [0,1,2,3,4,5,6,7,8]);
+        assert_eq!(parse_visible_pages("10111111"), Some([true,false,true,true,true,true,true,true,true]));
+        assert_eq!(parse_visible_pages("1000000"), Some([true,false,false,false,false,false,false,true,true]));
+        assert_eq!(parse_visible_pages("100000"), Some([true,false,false,false,false,false,true,true,true]));
+        assert_eq!(parse_visible_pages("000000"), Some([true,false,false,false,false,false,false,false,false]));
+        assert_eq!(parse_visible_pages("00000000"), Some([true,false,false,false,false,false,false,false,false]));
+        assert_eq!(parse_visible_pages("111111110"), Some([true,true,true,true,true,true,true,true,false]));
+        assert_eq!(parse_visible_pages("000000001"), Some([false,false,false,false,false,false,false,false,true]));
+        assert_eq!(parse_page_order("5,2,0,1,3,4,6,7"), Some([5,2,0,1,3,4,6,7,8]));
+        assert_eq!(parse_page_order("8,5,2,0,1,3,4,6,7"), Some([8,5,2,0,1,3,4,6,7]));
+        for invalid in ["", "11111", "1111111111", "1011111x", "invalid"] {
+            assert_eq!(parse_visible_pages(invalid), None);
+        }
+        for invalid in ["0,0,1,2,3,4,5,6", "8,1,2,3,4,5,6,7", "0,1", "0,1,2,3,4,5,6,7,7", "invalid"] {
+            assert_eq!(parse_page_order(invalid), None);
+        }
+    }
 
     #[test]
     fn island_appearance_values_are_normalized() {

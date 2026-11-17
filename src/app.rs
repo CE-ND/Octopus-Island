@@ -20,11 +20,13 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
-// ---------- 几何（逻辑点；原版 125% 截图 ÷ 1.25） ----------
+// ---------- 几何（统一使用 egui 逻辑点） ----------
 pub const PW: f32 = 419.0; // 展开面板宽
-pub const PH: f32 = 140.0; // 展开面板高
+pub const PH: f32 = 140.0; // 既有页面内容的坐标基准，后续可独立调整排版。
+/// 所有功能页统一的紧凑展开高度；内容过多时在页面内部滚动。
+pub const EXPANDED_H: f32 = 140.0;
 pub(crate) const CALENDAR_PAGE: usize = 7;
-pub(crate) const CALENDAR_H: f32 = 216.0;
+pub(crate) const AGENT_PAGE: usize = 8;
 pub const BAR_W: f32 = 163.0; // 收起药丸宽
 pub const BAR_H: f32 = 30.0; // 收起药丸高
 pub(crate) const HUD_W: f32 = 260.0;
@@ -37,7 +39,7 @@ pub const FLARE: f32 = 17.6; // 顶部外翻肩宽
 pub const FLARE_H: f32 = 16.0; // 外翻收敛高度
 pub const RAD: f32 = 33.0; // 底部圆角
 pub const WIN_W: f32 = 640.0; // 窗口（透明画布）
-pub const CANVAS_W: f32 = WIN_W + 320.0; // 保留右侧通知及阴影的完整空间，原岛仍按 WIN_W 定位。
+pub const CANVAS_W: f32 = WIN_W + 320.0; // 保留右侧通知及阴影的完整空间，主体岛仍按 WIN_W 定位。
 pub const WIN_H: f32 = 270.0;
 /// 胶囊皮肤与屏幕顶边的间隙。
 pub const PILL_GAP: f32 = 6.0;
@@ -50,7 +52,7 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
         painter.rect_filled(r,radius+grow*0.8,Color32::from_black_alpha((255.0*a*strength) as u8));
     }
 }
-pub(crate) const PAGE_NAMES: [&str; 8] = ["音乐", "专注", "饮水", "置物架", "待办", "邮箱", "AI 额度", "日程"];
+pub(crate) const PAGE_NAMES: [&str; model::PAGE_COUNT] = ["音乐", "专注", "饮水", "置物架", "待办", "邮箱", "AI 额度", "日程", "Agent"];
 
 // ---------- 动效参数 ----------
 /// 悬停意图缓冲：光标停留这么久才真正展开（期间药丸轻微胀大作为反馈），防误触。
@@ -97,7 +99,7 @@ pub struct Env {
     /// 光标位置（与 `frame` 传入的 `win` 同一坐标系）；不在窗口附近时为 None。
     pub cursor: Option<Pos2>,
     pub idle_seconds: Option<f64>,
-    /// 前台浏览器的顶部是否与岛重叠；岛仔自身窗口或暂不可读时为 None。
+    /// 前台浏览器的顶部是否与岛重叠；主窗口自身或暂不可读时为 None。
     pub browser_at_top: Option<bool>,
     pub media: NowPlaying,
     /// 系统主音量（0..100, 是否静音）；v0.5.4 音量条与系统双向同步。
@@ -160,7 +162,7 @@ pub enum Cmd {
     RequestNotifications,
     RequestQqNotifications,
     DisconnectNotifications,
-    /// 在对应助手配置里登记（true）或移除（false）岛仔的 hooks。
+    /// 在对应助手配置里登记（true）或移除（false）应用的 hooks。
     SetAgentHooks(crate::agent_hooks::Agent, bool),
     ToggleAutostart,
     AddFiles,
@@ -644,6 +646,8 @@ pub struct ViewState {
     hover_since: Option<f64>,
     leave_since: Option<f64>,
     pub hover_lock: bool,
+    /// 同一次悬停里已发生显式输入时，保持用户选择的页面。
+    agent_hover_suppressed: bool,
     pub(crate) reveal: f32,
     pub(crate) drag_hot: bool,
     pub(crate) drag_a: f32,
@@ -687,6 +691,7 @@ impl ViewState {
             hover_since: app.hover_since,
             leave_since: app.leave_since,
             hover_lock: app.hover_lock,
+            agent_hover_suppressed: app.agent_hover_suppressed,
             reveal: app.reveal,
             drag_hot: app.drag_hot,
             drag_a: app.drag_a,
@@ -726,6 +731,7 @@ impl ViewState {
         std::mem::swap(&mut self.hover_since, &mut other.hover_since);
         std::mem::swap(&mut self.leave_since, &mut other.leave_since);
         std::mem::swap(&mut self.hover_lock, &mut other.hover_lock);
+        std::mem::swap(&mut self.agent_hover_suppressed, &mut other.agent_hover_suppressed);
         std::mem::swap(&mut self.reveal, &mut other.reveal);
         std::mem::swap(&mut self.drag_hot, &mut other.drag_hot);
         std::mem::swap(&mut self.drag_a, &mut other.drag_a);
@@ -771,11 +777,13 @@ pub struct App {
 
     // 切页
     pub(crate) page: usize,
+    /// 悬停自动打开 Agent 后，在会话结束且所有窗口收起时恢复原页面。
+    agent_auto_return: Option<usize>,
     page_from: usize,
     page_dir: f32,
     page_t0: f64,
     slide: Spring,
-    dots: [Spring; 8],
+    dots: [Spring; model::PAGE_COUNT],
 
     // 置物架
     pub(crate) shelf_scroll: Spring,
@@ -835,6 +843,8 @@ pub struct App {
     /// 各助手的目录监听状态，显示在对应设置开关下方。
     pub agent_status:HashMap<crate::agent_hooks::Agent,String>,
     pub(crate) agent_activity:crate::agent_hooks::activity::Activity,
+    pub(crate) agent_selected:Option<(crate::agent_hooks::Agent,String)>,
+    pub(crate) agent_first:usize,
     /// 各助手会话最近一次状态（会话、状态、时间），用于合并同一次授权触发的重复事件。
     pub(crate) agent_recent:Vec<(crate::agent_hooks::Agent,String,crate::agent_hooks::Kind,f64)>,
     pub(crate) notification_apps:model::NotificationApps,
@@ -912,6 +922,7 @@ impl App {
                 hover_since: None,
                 leave_since: None,
                 hover_lock: false,
+                agent_hover_suppressed: false,
                 reveal: 0.0,
                 drag_hot: false,
                 drag_a: 0.0,
@@ -949,6 +960,7 @@ impl App {
             water: model::Water::default(),
             shelf: model::Shelf::load(),
             page: initial_page,
+            agent_auto_return: None,
             page_from: initial_page,
             page_dir: 1.0,
             page_t0: -10.0,
@@ -987,7 +999,7 @@ impl App {
             media_anchor: (String::new(), 0.0, 0.0, false),
             media: NowPlaying::default(),
             music_artwork: None,
-            settings_open:false, displays:Vec::new(), fluid:Default::default(), fluid_art:None, fluid_title:String::new(), settings_focus_requested:false, settings_tab:0, settings_category:0, wechat_status:String::new(), agent_status:HashMap::new(), agent_activity:Default::default(), agent_recent:Vec::new(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
+            settings_open:false, displays:Vec::new(), fluid:Default::default(), fluid_art:None, fluid_title:String::new(), settings_focus_requested:false, settings_tab:0, settings_category:0, wechat_status:String::new(), agent_status:HashMap::new(), agent_activity:Default::default(), agent_selected:None, agent_first:0, agent_recent:Vec::new(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
             listener_status: "尚未连接".into(),
             notification_bell_until: 0.0, notification_bell_at: -10.0, notice: None, pending_messengers:Vec::new(), alerts: Default::default(), history: Default::default(), pending: vec![],
             todo_first: 0, todo_choosing: false, pet: Default::default(), last_drink: None,
@@ -1449,8 +1461,10 @@ impl App {
     }
 
     pub fn show_page(&mut self,page:usize) {
+        if page>=PAGE_NAMES.len() {return;}
+        self.agent_auto_return=None;
         if !self.settings.visible_pages[page] {
-            self.settings_tab=[1,2,3,5,4,7,11,8][page];
+            self.settings_tab=[1,2,3,5,4,7,11,8,10][page];
             self.open_settings();
             return;
         }
@@ -1530,7 +1544,8 @@ impl App {
 
     /// 带过渡地切到某页。`dir` > 0 表示内容从右侧进入。
     pub(crate) fn go(&mut self, page: usize, dir: f32) {
-        if page == self.page || !self.settings.visible_pages[page] { return; }
+        if page>=PAGE_NAMES.len() || page == self.page || !self.settings.visible_pages[page] { return; }
+        self.agent_auto_return=None;
         self.subpage=None;
         // 连点：上一段过渡还没结束时，以当前页为起点重新开始，位移速度保留。
         self.page_from = self.page;
@@ -1542,6 +1557,38 @@ impl App {
         self.slide.target = 0.0;
         self.dots_target();
         self.cancel_edit();
+    }
+
+    /// 在悬停真正展开前选择工作页；展开后不覆盖用户的手动导航。
+    fn agent_hover_page(&mut self,ctx:&egui::Context,inside:bool,other_open:bool) {
+        let active=self.agent_activity.primary(self.t).is_some();
+        if !self.open && !other_open && !active && self.page==AGENT_PAGE {
+            if let Some(previous)=self.agent_auto_return.take() {
+                let destination=if self.settings.visible_pages[previous]{Some(previous)}else{
+                    self.settings.page_order.iter().copied().find(|page|*page!=AGENT_PAGE&&self.settings.visible_pages[*page])
+                };
+                if let Some(page)=destination {self.go(page,-1.0);}
+            }
+        }
+        if !inside {self.agent_hover_suppressed=false;return;}
+        if !self.open && ctx.input(|input|input.pointer.any_pressed()||input.pointer.any_released()||input.raw_scroll_delta!=Vec2::ZERO) {
+            self.agent_hover_suppressed=true;
+        }
+        let agent_notice=self.notice.as_ref().is_some_and(|notice|matches!(notice.source,crate::extras::AlertSource::Agent{..}));
+        let allowed_notice=self.notice.is_none()||self.compact_notices()||agent_notice;
+        if self.open || other_open || !active || !self.settings.visible_pages[AGENT_PAGE]
+            || self.agent_hover_suppressed || self.hover_lock || self.drag_hot || self.is_editing() || !allowed_notice {return;}
+        let intent=if self.effective_minimal(){MINIMAL_HOVER_INTENT}else{HOVER_INTENT};
+        if !self.hover_since.is_some_and(|since|self.t-since>=intent){return;}
+        let previous=self.page;
+        let saved=self.agent_auto_return;
+        self.go(AGENT_PAGE,1.0);
+        if previous!=AGENT_PAGE {self.agent_auto_return=saved.or(Some(previous));}
+        self.agent_selected=None;
+        self.agent_first=self.agent_activity.primary(self.t).and_then(|primary|{
+            self.agent_activity.sessions(self.t).position(|session|session.agent==primary.agent&&session.id==primary.id)
+        }).unwrap_or(0);
+        if agent_notice {self.notice=None;}
     }
 
     fn page_e(&self) -> f32 {
@@ -1692,14 +1739,15 @@ impl App {
     }
 
     pub(crate) fn expanded_height(&self)->f32 {
-        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
+        EXPANDED_H
     }
 
     // ---------------------------------------------------------------
     // 每帧入口
     // ---------------------------------------------------------------
     pub fn frame(&mut self, ui: &mut egui::Ui, win: Rect, env: &Env) -> FrameOut {
-        self.frame_with(true, ui, win, env)
+        let other_open=self.views.values().any(|view|view.open);
+        self.frame_with(true, ui, win, env,other_open)
     }
 
     /// 用指定显示器对应的独立视图绘制一帧；共享状态只在 `frame()`（主视图）里推进。
@@ -1711,14 +1759,16 @@ impl App {
             view.hover_since = None;
             view.leave_since = None;
             view.hover_lock = false;
+            view.agent_hover_suppressed = false;
             view.reveal = 0.0;
             view.drag_hot = false;
             view.drag_a = 0.0;
             view.forced_open_until = 0.0;
             view
         });
+        let other_open=self.view.open||self.views.values().any(|view|view.open);
         std::mem::swap(&mut self.view, &mut view);
-        let out = self.frame_with(false, ui, win, env);
+        let out = self.frame_with(false, ui, win, env,other_open);
         std::mem::swap(&mut self.view, &mut view);
         self.views.insert(display_id.to_string(), view);
         out
@@ -1734,6 +1784,7 @@ impl App {
             view.hover_since = None;
             view.leave_since = None;
             view.hover_lock = false;
+            view.agent_hover_suppressed = false;
             view.reveal = 0.0;
             view.drag_hot = false;
             view.drag_a = 0.0;
@@ -1750,7 +1801,7 @@ impl App {
         self.views.insert(display_id.to_string(), view);
     }
 
-    fn frame_with(&mut self, advance_shared: bool, ui: &mut egui::Ui, win: Rect, env: &Env) -> FrameOut {
+    fn frame_with(&mut self, advance_shared: bool, ui: &mut egui::Ui, win: Rect, env: &Env,other_open:bool) -> FrameOut {
         let ctx = ui.ctx().clone();
         let dt = match self.last_t {
             Some(t0) => (env.t - t0).clamp(0.0, 0.1) as f32,
@@ -1841,13 +1892,17 @@ impl App {
             self.drag_hot = true;
             if self.page != 3 {
                 self.drag_saved = Some(self.page);
+                let agent_return=self.agent_auto_return;
                 self.go(3, if self.page < 3 { 1.0 } else { -1.0 });
+                self.agent_auto_return=agent_return;
             }
         } else if !hovering_files && self.drag_hot {
             // 拖到外面松手 / 取消：安静地退回原页
             self.drag_hot = false;
             if let Some(p) = self.drag_saved.take() {
+                let agent_return=self.agent_auto_return;
                 self.go(p, if p < 3 { -1.0 } else { 1.0 });
+                self.agent_auto_return=agent_return;
             }
         }
         self.drag_a = anim::approach(self.drag_a, if self.drag_hot { 1.0 } else { 0.0 }, 16.0, dt);
@@ -1880,7 +1935,9 @@ impl App {
                 let cursor=env.cursor.unwrap()-self.content_origin(win).to_vec2();
                 let mail_reading=self.page==5 && self.mail.open_uid.is_some();
                 let mail_list=self.page==5 && !self.mail.accounts.is_empty() && self.mail.open_uid.is_none() && self.mail_list_bounds().contains(cursor);
-                if mail_reading || mail_list {self.wheel_delta=0.0;}
+                let agent_body=self.page==AGENT_PAGE && self.agent_activity.primary(self.t).is_some()
+                    && Rect::from_min_max(Pos2::new(42.0,34.0),Pos2::new(377.0,EXPANDED_H-6.0)).contains(cursor);
+                if mail_reading || mail_list || agent_body {self.wheel_delta=0.0;}
                 else {
                     // 累积高精度滚轮的小幅输入；停顿或反向时丢弃上一段余量。
                     if self.t-self.wheel_at>0.18 || self.wheel_delta*scroll<0.0 {self.wheel_delta=0.0;}
@@ -1890,7 +1947,7 @@ impl App {
                         let next=self.wheel_delta<0.0;
                         self.wheel_delta=0.0;
                         let calendar_max=if self.page==CALENDAR_PAGE {self.calendar_scroll_max(env)}else{0};
-                        let calendar_body=self.page==CALENDAR_PAGE && Rect::from_min_max(Pos2::new(163.0,52.0),Pos2::new(378.0,208.0)).contains(cursor);
+                        let calendar_body=self.page==CALENDAR_PAGE && Rect::from_min_max(Pos2::new(163.0,48.0),Pos2::new(378.0,EXPANDED_H-8.0)).contains(cursor);
                         let clipboard_tab=self.page==3 && self.shelf_tab==1;
                         let clipboard_body=clipboard_tab && Rect::from_min_max(Pos2::new(42.0,31.0),Pos2::new(377.0,124.0)).contains(cursor);
                         let list=match self.page {
@@ -1918,8 +1975,9 @@ impl App {
                 }
             }
         } else {self.wheel_delta=0.0;}
-        let over_agent=self.over_agent_badge(env,win,top);
-        let want = (inside && !over_agent && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
+        self.agent_hover_page(&ctx,inside,other_open);
+        let agent_notice=self.notice.as_ref().is_some_and(|notice|matches!(notice.source,crate::extras::AlertSource::Agent{..}));
+        let want = (inside && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open||agent_notice)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
         self.morph(want, inside, env.t, dt, advance_shared);
         self.update_pet(env, cx, advance_shared);
 
@@ -1943,7 +2001,7 @@ impl App {
         let thickness = if side { crate::side_dock::SIDE_BAR_W } else { BAR_H };
         let radius = if minimal_pill { BAR_H_MIN / 2.0 } else if pill { (w.min(h) * 0.5).min(lerp(thickness * 0.5, 26.0, pc)) } else { lerp(12.5, RAD * k.min(1.0), pc) };
         let flare_h = lerp(8.0, FLARE_H, pc);
-        let thick = glass::thickness(PH);
+        let thick = glass::thickness(EXPANDED_H);
         let glass_skin = self.settings.skin.is_glass();
         let layer = painter.layer_id();
         let palette = self.skin_palette();
@@ -2576,7 +2634,7 @@ impl App {
         let group = battery_space + date_w + 8.0 + clock_w;
         let gx = local_cx - group / 2.0 + if show_battery {6.0}else{0.0};
         // 日程页左侧还有新增按钮，顶栏从操作区右侧开始，避免较长的日期和时段文字挤到按钮上。
-        let gx = if self.page==CALENDAR_PAGE {gx.max(155.0)}else{gx};
+        let gx = if self.page==CALENDAR_PAGE {gx.max(155.0)}else if self.page==AGENT_PAGE{gx.max(160.0)}else{gx};
         let hb = (gx + 8.5, 18.6);
         let hd = gx + battery_space;
         let hc = hd + date_w + 8.0;
@@ -2676,7 +2734,10 @@ impl App {
         let (hover,press)=c.hover_t(&settings);
         c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
         paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
-        if settings.clicked(){self.settings_tab=[1,2,3,5,4,7,11,8][self.page];self.open_settings();}
+        if settings.clicked(){
+            if self.page==AGENT_PAGE {self.open_agent_settings();}
+            else {self.settings_tab=[1,2,3,5,4,7,11,8][self.page];self.open_settings();}
+        }
         if self.subpage==Some(self.page) {
             c.text(15.0,25.0,"‹",19.0,W::Bold,theme::WHITE,H::Left);
             c.text(37.0,25.0,if self.page==2{"饮水设置"}else{"专注设置"},size::TITLE,W::Bold,theme::WHITE,H::Left);
@@ -2710,7 +2771,7 @@ impl App {
     fn page_title(&self, page: usize, c: &Card) {
         let base = 25.0;
         let (a, b, col) = match page {
-            0 | CALENDAR_PAGE => return,
+            0 | CALENDAR_PAGE | AGENT_PAGE => return,
             1 => ("番茄", "专注", theme::RED_TOP),
             2 => ("饮水", "提醒", theme::BLUE),
             // 置物架的标题就是「置物架 | 剪贴板」分栏，由页面自己画。
@@ -2718,7 +2779,7 @@ impl App {
             4 => ("待办", "清单", theme::GREEN),
             5 => ("邮箱", "", theme::CYAN),
             6 => ("AI", "额度", theme::SOFT_GREEN),
-            _ => ("岛仔", "设置", theme::WHITE),
+            _ => ("Octopus Island", "设置", theme::WHITE),
         };
         let wa = c.text(15.0, base, a, size::TITLE, W::Bold, theme::WHITE, H::Left);
         if !b.is_empty() {
@@ -2738,6 +2799,7 @@ impl App {
         paint::chevron(c, 398.0, arrow_y, 1.0, rh, rp);
         if l.clicked() { self.navigate_page(false); }
         if r.clicked() { self.navigate_page(true); }
+        if self.page==AGENT_PAGE {return;}
         // 页码豆：宽度由弹簧驱动，整行实时居中；当前页是白色长条
         let gap = 4.0;
         let dot_y=self.expanded_height()-7.2;
@@ -2776,6 +2838,7 @@ impl App {
             5 => self.page_mail(c, env, cmds),
             6 => self.page_quota(c),
             CALENDAR_PAGE => self.page_calendar(c,env),
+            AGENT_PAGE => self.agent_page(c),
             _ => self.page_settings(c),
         }
     }

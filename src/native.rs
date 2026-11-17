@@ -1,13 +1,11 @@
 //! Windows 的非激活窗口、形状区域与命中测试。
 //!
-//! 对齐原版实测（`BUILD-ORDER-v1.md` §1/§5）：
+//! 窗口不主动抢占焦点，显示区域与点击区域分别维护：
 //! - `WS_POPUP` + `WS_EX_TOPMOST|TOOLWINDOW|NOREDIRECTIONBITMAP|NOACTIVATE`；
-//! - `SetWindowRgn` 用三种矩形：收起 179×34@(230,0)、展开 512×186@(64,0)、
-//!   极简收起 112×14@(264,0)，坐标是 640×190 逻辑点；
-//! - 命中区与 region 分开：收起 143×22@(253,5)、展开 416×132@(110,5)，
-//!   命中区外 `HTTRANSPARENT`，真实点击落给下层窗口；
+//! - `SetWindowRgn` 按当前岛体形状组合显示区域；
+//! - 命中区外返回 `HTTRANSPARENT`，真实点击交给下层窗口；
 //! - 前台窗口切走（`EVENT_SYSTEM_FOREGROUND`，且不是本进程）时通知主线程收起；
-//! - 原版没有可用的 Esc 收起入口（§2.5），这里也不注册键盘钩子。
+//! - 根据鼠标和前台窗口状态收起，不注册全局键盘钩子。
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::HashMap;
@@ -23,7 +21,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState,VK_LBUTTON,VK
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-const SUBCLASS_ID: usize = 0x4E55_5341; // "OCTOPUS_ISLAND"
+const SUBCLASS_ID: usize = 0x4F43_544F; // "OCTO"：窗口子类回调的内部标识。
 #[allow(dead_code)]
 const WS_EX_NOREDIRECTIONBITMAP: isize = 0x0020_0000;
 

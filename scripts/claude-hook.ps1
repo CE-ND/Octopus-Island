@@ -1,4 +1,4 @@
-# 把 Claude Code hooks 给出的状态交给岛仔：只保存事件类型、工具名和项目文件夹名。
+# 把 Claude Code hooks 给出的状态交给应用：只保存事件类型、工具名和项目文件夹名。
 # 不保存提示词、命令、回复内容，不读取登录令牌，也不发送网络请求；不向标准输出写任何内容。
 $ErrorActionPreference = 'Stop'
 try {

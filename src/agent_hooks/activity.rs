@@ -38,6 +38,8 @@ pub struct Session {
     tools: HashMap<String, String>,
     calls: HashMap<String, (u64, bool)>,
     attention: Vec<Attention>,
+    last_tool: String,
+    last_tool_at: u64,
 }
 
 impl Session {
@@ -74,6 +76,11 @@ impl Session {
             .find(|a| !a.tool.is_empty())
             .map(|a| a.tool.as_str())
             .or_else(|| self.tools.values().min().map(String::as_str))
+            .or_else(|| self.recent_tool())
+    }
+    /// 最近收到的工具状态；工具结束后保留，下一轮开始时清空。
+    pub fn recent_tool(&self) -> Option<&str> {
+        (!self.last_tool.is_empty()).then_some(self.last_tool.as_str())
     }
     fn priority(&self) -> u8 {
         if self.phase == Phase::Waiting {
@@ -195,6 +202,8 @@ impl Activity {
                 tools: HashMap::new(),
                 calls: HashMap::new(),
                 attention: Vec::new(),
+                last_tool: String::new(),
+                last_tool_at: 0,
             });
             self.sessions.len() - 1
         });
@@ -226,6 +235,8 @@ impl Activity {
             session.tools.clear();
             session.calls.clear();
             session.attention.clear();
+            session.last_tool.clear();
+            session.last_tool_at = 0;
             session.phase = Phase::Working;
         } else if at != 0
             && at < session.at
@@ -271,6 +282,14 @@ impl Activity {
                     .calls
                     .insert(key.clone(), (at, event.kind == Kind::ToolEnd));
             }
+        }
+        if !event.tool.is_empty()
+            && matches!(event.kind, Kind::ToolStart | Kind::ToolEnd | Kind::Permission | Kind::Question | Kind::QuestionAsync | Kind::Plan)
+            && (session.last_tool.is_empty() || at != 0 && at >= session.last_tool_at || at == 0 && session.last_tool_at == 0)
+        {
+            // 允许旧并行调用结束自身状态，但不能把更近的工具名称回退成旧记录。
+            session.last_tool.clone_from(&event.tool);
+            session.last_tool_at = at;
         }
         session.at = at.max(session.at);
         session.changed = now;
@@ -361,6 +380,49 @@ mod tests {
             },
         }
     }
+    #[test]
+    fn recent_tools_survive_results_and_ignore_older_parallel_events() {
+        let mut activity = Activity::default();
+        activity.receive(&event(Kind::Working, "one", "", 1), 0.0);
+        let mut read = event(Kind::ToolStart, "one", "read", 2);
+        read.tool = "read_file".into();
+        activity.receive(&read, 1.0);
+        read.kind = Kind::ToolEnd;
+        read.meta.at = 3;
+        activity.receive(&read, 2.0);
+        assert_eq!(activity.primary(2.0).unwrap().tool(), Some("read_file"));
+        let mut write = event(Kind::ToolStart, "one", "write", 5);
+        write.tool = "write_file".into();
+        activity.receive(&write, 3.0);
+        write.kind = Kind::ToolEnd;
+        write.meta.at = 6;
+        activity.receive(&write, 4.0);
+        let mut late = event(Kind::ToolEnd, "one", "parallel", 4);
+        late.tool = "old_parallel_tool".into();
+        assert!(activity.receive(&late, 5.0));
+        assert_eq!(activity.primary(5.0).unwrap().recent_tool(), Some("write_file"));
+        assert_eq!(activity.primary(5.0).unwrap().tool(), Some("write_file"));
+        activity.unavailable(Agent::Codex, 6.0);
+        assert_eq!(activity.primary(6.0).unwrap().recent_tool(), Some("write_file"));
+        activity.receive(&event(Kind::Working, "two", "", 7), 7.0);
+        assert_eq!(activity.primary(7.0).unwrap().recent_tool(), None);
+        assert_eq!(activity.primary(7.0).unwrap().tool(), None);
+    }
+
+    #[test]
+    fn untimed_tool_events_retain_the_latest_name_until_the_next_turn() {
+        let mut activity = Activity::default();
+        activity.receive(&event(Kind::Working, "", "", 0), 0.0);
+        let mut tool = event(Kind::ToolStart, "", "", 0);
+        tool.tool = "exec_command".into();
+        activity.receive(&tool, 1.0);
+        tool.kind = Kind::ToolEnd;
+        activity.receive(&tool, 2.0);
+        assert_eq!(activity.primary(2.0).unwrap().tool(), Some("exec_command"));
+        activity.receive(&event(Kind::Working, "", "", 0), 3.0);
+        assert_eq!(activity.primary(3.0).unwrap().recent_tool(), None);
+    }
+
     #[test]
     fn work_persists_and_unrelated_tools_cannot_clear_permission_waits() {
         let mut activity = Activity::default();

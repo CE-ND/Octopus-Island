@@ -1,5 +1,5 @@
-//! 五个页面：音乐 → 专注 → 饮水 → 置物 → 待办。
-//! 坐标全部是面板局部逻辑点（419×140），文字 y 是基线。
+//! 功能页面的绘制与交互；Agent 工作页由 `agent_page` 模块绘制。
+//! 坐标全部是面板局部逻辑点，文字 y 是基线。
 
 use crate::anim::{self, lerp, smoothstep, Spring};
 use crate::app::{App, Cmd, Env, Phase};
@@ -921,7 +921,7 @@ impl App {
             c.text(307.0,46.0,if self.settings.mail_sync_operations{"同步"}else{"仅本机"},8.0,W::Regular,theme::DIM,H::Center);
             let ready=self.mail.manage.pending.is_empty()&&self.mail.accounts.iter().any(|a|a.enabled&&self.mail.manage.data.contains_key(&(crate::mail::key(a),Folder::Inbox))&&self.mail.manage.identities.get(&crate::mail::key(a))==Some(a));
             c.text(375.0,47.0,"全部已读",10.0,W::Regular,if ready{theme::BLUE}else{theme::DIM},H::Right);
-            if c.hit(325.0,33.0,53.0,19.0,"mail-read-all").on_hover_text(if self.settings.mail_sync_operations{"将已连接邮箱的未读邮件全部标为已读"}else{"仅将岛仔当前加载的邮件标为已读，不更改邮箱"}).clicked()&&ready{
+            if c.hit(325.0,33.0,53.0,19.0,"mail-read-all").on_hover_text(if self.settings.mail_sync_operations{"将已连接邮箱的未读邮件全部标为已读"}else{"仅将 Octopus Island 当前加载的邮件标为已读，不更改邮箱"}).clicked()&&ready{
                 self.mail_manage_request(None,Folder::Inbox,Action::ReadAll);
             }
         }
@@ -990,10 +990,14 @@ impl App {
     pub(crate) fn mail_detail(&mut self, c: &Card, raw: &mail::Item, cmds: &mut Vec<Cmd>) {
         let hidden=self.mail_code_hidden(raw);
         let display=self.display_mail(raw);let item=&display;
-        c.fill(36.0, 36.0, 347.0, 188.0, 11.0, theme::CARD);
-        let back = c.hit(330.0, 42.0, 44.0, 14.0, ("mail-back", item.uid));
+        let height=self.expanded_height();
+        let divider_y=height-36.0;
+        let body_top=69.0;
+        let body_height=(divider_y-body_top-4.0).max(0.0);
+        c.fill(36.0, 33.0, 347.0, (height-47.0).max(0.0), 11.0, theme::CARD);
+        let back = c.hit(330.0, 34.0, 44.0, 16.0, ("mail-back", item.uid));
         let bh = c.hover_t(&back).0;
-        c.text(374.0, 50.0, "返回", 10.5, W::Regular, if bh > 0.5 { theme::WHITE } else { theme::GRAY }, H::Right);
+        c.text(374.0, 45.0, "返回", 10.5, W::Regular, if bh > 0.5 { theme::WHITE } else { theme::GRAY }, H::Right);
         if back.clicked() {
             self.mail.open_uid = None;
             return;
@@ -1001,38 +1005,41 @@ impl App {
         let folder=self.mail.manage.folder();let ready=self.mail_ready(&item.account,folder);
         let seen=self.mail_seen(raw,folder)==Some(true);
         let status=if folder==crate::mail_manage::Folder::Trash{"恢复"}else if seen{"标为未读"}else{"标为已读"};
-        c.text(215.0,50.0,status,9.0,W::Regular,if ready{theme::BLUE}else{theme::DIM},H::Right);
-        if c.hit(166.0,39.0,50.0,18.0,("mail-detail-seen",item.uid)).clicked()&&ready{
+        c.text(307.0,61.0,status,8.5,W::Regular,if ready{theme::BLUE}else{theme::DIM},H::Right);
+        if c.hit(273.0,50.0,38.0,17.0,("mail-detail-seen",item.uid)).on_hover_text(status).clicked()&&ready{
             let action=if folder==crate::mail_manage::Folder::Trash{crate::mail_manage::Action::Move{uid:item.uid}}else{crate::mail_manage::Action::Read{uid:item.uid,seen:!seen}};
             self.mail_manage_request(Some(&item.account),folder,action);
         }
         if folder==crate::mail_manage::Folder::Inbox{
-            c.text(252.0,50.0,"删除",9.0,W::Regular,if ready{theme::RED}else{theme::DIM},H::Right);
-            if c.hit(220.0,39.0,35.0,18.0,("mail-detail-delete",item.uid)).on_hover_text(if self.settings.mail_sync_operations{"移到邮箱回收站"}else{"移到本机回收站，不更改邮箱"}).clicked()&&ready{self.mail_manage_request(Some(&item.account),folder,crate::mail_manage::Action::Move{uid:item.uid});}
+            c.text(337.0,61.0,"删除",9.0,W::Regular,if ready{theme::RED}else{theme::DIM},H::Right);
+            if c.hit(313.0,50.0,26.0,17.0,("mail-detail-delete",item.uid)).on_hover_text(if self.settings.mail_sync_operations{"移到邮箱回收站"}else{"移到本机回收站，不更改邮箱"}).clicked()&&ready{self.mail_manage_request(Some(&item.account),folder,crate::mail_manage::Action::Move{uid:item.uid});}
         }
-        let from = c.fit(&item.from, 11.5, W::Semibold, 112.0);
-        c.text(46.0, 50.0, &from, 11.5, W::Semibold, theme::WHITE, H::Left);
-        let read=c.hit(266.0,42.0,60.0,14.0,("mail-read",&item.account,item.uid)).on_hover_text("在独立窗口阅读完整正文");
-        c.text(324.0,50.0,"阅读全文",10.5,W::Regular,if read.hovered(){theme::BLUE}else{theme::GRAY},H::Right);
+        let from = c.fit(&item.from, 9.5, W::Semibold, 88.0);
+        c.text(46.0, 61.0, &from, 9.5, W::Semibold, theme::WHITE, H::Left);
+        c.hit(46.0,50.0,88.0,17.0,"mail-detail-from").on_hover_text(&item.from);
+        let read=c.hit(266.0,34.0,60.0,16.0,("mail-read",&item.account,item.uid)).on_hover_text("在独立窗口阅读完整正文");
+        c.text(324.0,45.0,"阅读全文",10.5,W::Regular,if read.hovered(){theme::BLUE}else{theme::GRAY},H::Right);
         if read.clicked(){self.mail_open_reader(raw);}
-        let subject = c.fit(&item.subject, 13.5, W::Semibold, 328.0);
-        c.text(46.0, 73.0, &subject, 13.5, W::Semibold, theme::WHITE, H::Left);
-        c.hit(46.0,58.0,328.0,20.0,("mail-subject",&item.account,item.uid)).on_hover_text(&item.subject);
-        c.text(374.0, 92.0, &item.time, 10.0, W::Regular, Color32::from_gray(170), H::Right);
+        let subject = c.fit(&item.subject, 12.0, W::Semibold, 212.0);
+        c.text(46.0, 45.0, &subject, 12.0, W::Semibold, theme::WHITE, H::Left);
+        c.hit(46.0,34.0,212.0,16.0,("mail-subject",&item.account,item.uid)).on_hover_text(&item.subject);
+        let time=item.time.rsplit(' ').next().unwrap_or(&item.time);
+        c.text(374.0, 61.0, &c.fit(time,8.5,W::Regular,31.0), 8.5, W::Regular, Color32::from_gray(170), H::Right);
+        c.hit(342.0,50.0,32.0,17.0,"mail-detail-time").on_hover_text(&item.time);
         let account=format!("收件邮箱：{}",item.account);
-        c.text(46.0,92.0,&c.fit(&account,10.0,W::Regular,230.0),10.0,W::Regular,Color32::from_gray(175),H::Left);
-        c.hit(46.0,80.0,230.0,16.0,("mail-account",&item.account,item.uid)).on_hover_text(&account);
+        c.text(144.0,61.0,&c.fit(&account,9.0,W::Regular,126.0),9.0,W::Regular,Color32::from_gray(175),H::Left);
+        c.hit(142.0,50.0,130.0,17.0,("mail-account",&item.account,item.uid)).on_hover_text(&account);
 
         // 正文和链接共用滚动区域，会议与验证码操作保留在底部。
         let mut content=egui::Ui::new(c.ui.ctx().clone(),egui::Id::new(("mail-content",&item.account,item.uid,c.live)),
-            egui::UiBuilder::new().max_rect(c.rect(46.0,104.0,328.0,90.0)).layer_id(c.painter.layer_id()).style(c.ui.style().clone()));
-        content.set_clip_rect(c.rect(46.0,104.0,328.0,90.0).intersect(c.painter.clip_rect()));
+            egui::UiBuilder::new().max_rect(c.rect(46.0,body_top,328.0,body_height)).layer_id(c.painter.layer_id()).style(c.ui.style().clone()));
+        content.set_clip_rect(c.rect(46.0,body_top,328.0,body_height).intersect(c.painter.clip_rect()));
         content.set_opacity(c.painter.opacity());
         if !c.live {content.disable();}
         content.spacing_mut().item_spacing.y=6.0*c.s;
         content.style_mut().spacing.scroll.floating=false;
         content.spacing_mut().scroll.bar_width=4.0*c.s;
-        egui::ScrollArea::vertical().id_salt(("mail-body",&item.account,item.uid)).max_height(90.0*c.s).auto_shrink([false,false]).show(&mut content,|ui|{
+        egui::ScrollArea::vertical().id_salt(("mail-body",&item.account,item.uid)).max_height(body_height*c.s).auto_shrink([false,false]).show(&mut content,|ui|{
             if !item.summary.is_empty() {
                 ui.add(egui::Label::new(egui::RichText::new(item.summary.as_ref()).font(c.font(12.0,W::Regular)).color(Color32::from_gray(220))).wrap());
             }else if item.links.is_empty(){
@@ -1047,27 +1054,28 @@ impl App {
         });
 
         if !self.mail.manage.message.is_empty(){
-            c.text(46.0,229.0,&c.fit(&self.mail.manage.message,8.0,W::Regular,130.0),8.0,W::Regular,theme::GRAY,H::Left);
-            c.hit(44.0,219.0,132.0,15.0,"mail-detail-status").on_hover_text(&self.mail.manage.message);
+            let status_y=height-7.0;
+            c.text(46.0,status_y,&c.fit(&self.mail.manage.message,8.0,W::Regular,112.0),8.0,W::Regular,theme::GRAY,H::Left);
+            c.hit(44.0,status_y-10.0,114.0,15.0,"mail-detail-status").on_hover_text(&self.mail.manage.message);
         }
         // 底部一行：会议时间（绿）优先，其次验证码（点一下复制）。
-        c.seg((46.0,199.0),(374.0,199.0),0.6,Color32::from_gray(48));
-        let y = 214.0;
+        c.seg((46.0,divider_y),(374.0,divider_y),0.6,Color32::from_gray(48));
+        let y = height-20.0;
         if hidden {
             c.text(46.0,y,"验证码已隐藏（不代表失效）",11.0,W::Regular,theme::GRAY,H::Left);
             c.text(374.0,y,"查看 15 秒",10.5,W::Regular,theme::BLUE,H::Right);
-            if c.hit(290.0,y-14.0,86.0,24.0,("mail-reveal",item.uid)).clicked(){self.reveal_mail_code(raw);}
+            if c.hit(290.0,y-13.0,86.0,18.0,("mail-reveal",item.uid)).clicked(){self.reveal_mail_code(raw);}
         } else if let Some(m) = &item.meeting {
             let ignored=self.mail_event_ignored(m);
             c.text(46.0,y,&format!("{} · {}",if ignored{"已忽略"}else{"日程"},m.at),10.5,W::Regular,if ignored{theme::DIM}else{theme::GREEN},H::Left);
             let label=if ignored{"恢复日程"}else{"忽略日程"};
             c.text(374.0,y,label,10.5,W::Regular,theme::GRAY,H::Right);
-            if c.hit(316.0,y-14.0,60.0,24.0,("mail-ignore-event",item.uid)).on_hover_text(&m.title).clicked(){self.toggle_mail_event(m);}
+            if c.hit(316.0,y-13.0,60.0,18.0,("mail-ignore-event",item.uid)).on_hover_text(&m.title).clicked(){self.toggle_mail_event(m);}
         } else if let Some(code) = &item.code {
             let label = format!("验证码 {code}");
             let w = c.text(46.0, y, &label, 13.0, W::Semibold, theme::GREEN, H::Left);
             c.text(46.0 + w + 6.0, y, "点击复制", 10.5, W::Regular, theme::DIM, H::Left);
-            let hit = c.hit(42.0, y - 14.0, w + 60.0, 24.0, ("mail-detail-code", item.uid));
+            let hit = c.hit(42.0, y - 13.0, w + 60.0, 18.0, ("mail-detail-code", item.uid));
             if hit.clicked() {
                 cmds.push(Cmd::Copy(code.clone()));
                 self.code_copied(code);

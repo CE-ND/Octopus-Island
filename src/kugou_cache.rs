@@ -20,7 +20,7 @@ fn header<'a>(raw:&'a str,key:&str)->Option<&'a str>{
 }
 
 /// 去掉标题末尾括号里的译名或别名：「ANGEL (天使)」→「ANGEL」。
-/// 括号里是版本信息（Live、Remix、伴奏、现场等）时保留，避免把其他版本的歌词当成原版。
+/// 括号里是版本信息（Live、Remix、伴奏、现场等）时保留，避免把其他版本的歌词匹配到原始录音。
 fn without_alias(title:&str)->&str {
     static ALIAS:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
     static VERSION:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
@@ -118,7 +118,7 @@ mod tests{
         assert!(select(&krc("ANGEL (天使)"),"Angel","尹美莱、Tiger JK、Bizzy",255.0).is_some(),"只多了译名的同一首歌应能读取");
         assert!(select(&krc("ANGEL"),"Angel","尹美莱、Tiger JK、Bizzy",255.0).is_some());
         for other in ["ANGEL (Live)","ANGEL (Remix)","ANGEL (伴奏)","ANGEL (现场版)","Devil (天使)"] {
-            assert!(select(&krc(other),"Angel","尹美莱、Tiger JK、Bizzy",255.0).is_none(),"{other} 不能当成原版");
+            assert!(select(&krc(other),"Angel","尹美莱、Tiger JK、Bizzy",255.0).is_none(),"{other} 不能当成原始录音");
         }
         assert_eq!(without_alias("ANGEL (天使)"),"ANGEL");
         assert_eq!(without_alias("Track (Live)"),"Track (Live)");

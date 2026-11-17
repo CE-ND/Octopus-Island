@@ -109,7 +109,7 @@ impl State {
         }).id();
         let installing = self.rx.is_some() && self.cancel.is_none();
         ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("octopus-island-update"),
-            egui::ViewportBuilder::default().with_title("岛仔更新").with_icon(theme::app_icon())
+            egui::ViewportBuilder::default().with_title("Octopus Island 更新").with_icon(theme::app_icon())
                 .with_inner_size([520.0, 416.0]).with_resizable(false).with_decorations(false)
                 .with_transparent(true).with_active(true), |ctx, _| {
                 if focus {
@@ -151,7 +151,7 @@ impl State {
                             ui.image((logo,egui::vec2(52.0,52.0)));
                             ui.add_space(4.0);
                             ui.vertical(|ui| {
-                                ui.label(egui::RichText::new("岛仔有新版本了").font(theme::font(21.0,W::Semibold)));
+                                ui.label(egui::RichText::new("Octopus Island 有新版本了").font(theme::font(21.0,W::Semibold)));
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(option_env!("OCTOPUS_ISLAND_BUILD_LABEL").unwrap_or(env!("CARGO_PKG_VERSION"))).color(theme::DIM));
                                     ui.label(egui::RichText::new("→").color(theme::DIM));
@@ -225,7 +225,7 @@ impl State {
 }
 
 // Windows 的 GL 透明窗口可能仍显示黑底，按绘制轮廓裁掉窗口外沿。
-/// 只统计岛仔自己的文件（KB）。共享安装文件夹里的其他软件不算在内。
+/// 只统计应用自己的文件（KB）。共享安装文件夹里的其他软件不算在内。
 fn own_files_kb(dir: &std::path::Path) -> u32 {
     let bytes: u64 = ["octopus-island.exe", "Uninstall.exe", "LICENSE", "THIRD_PARTY_NOTICES.txt"].iter()
         .filter_map(|name| std::fs::metadata(dir.join(name)).ok()).filter(|meta| meta.is_file()).map(|meta| meta.len()).sum();
@@ -257,7 +257,7 @@ fn clip_update_window(rect: egui::Rect, scale: f32) {
     unsafe extern "system" fn visit(hwnd: HWND, data: LPARAM) -> BOOL {
         let mut title = [0u16; 64];
         let len = GetWindowTextW(hwnd, &mut title) as usize;
-        if String::from_utf16_lossy(&title[..len]) != "岛仔更新" { return BOOL(1); }
+        if String::from_utf16_lossy(&title[..len]) != "Octopus Island 更新" { return BOOL(1); }
         let &(rect, scale) = &*(data.0 as *const (egui::Rect, f32));
         let region = update_window_region(rect, scale);
         let old = CreateRectRgn(0, 0, 0, 0);

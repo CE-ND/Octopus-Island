@@ -276,7 +276,7 @@ fn read_settings(path: &Path, agent: Agent) -> Result<Value, String> {
     Ok(value)
 }
 
-/// 先移除岛仔自己的 hook，再按需重新加入；用户已有的 hook 一律保留。
+/// 先移除应用自身的 hook，再按需重新加入；用户已有的 hook 一律保留。
 fn apply(settings: &mut Value, agent: Agent, command: Option<&str>) -> Result<(), String> {
     let unknown = format!("{} 的 hooks 配置格式无法识别，已保留原样", agent.label());
     let root = settings.as_object_mut().ok_or_else(|| unknown.clone())?;
@@ -375,7 +375,7 @@ pub fn install(agent: Agent, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 仅移除对应助手中岛仔登记的 hook、脚本和状态目录。
+/// 仅移除对应助手中本应用登记的 hook、脚本和状态目录。
 pub fn uninstall(agent: Agent, dir: &Path) -> Result<(), String> {
     let path = dir.join(agent.settings_file());
     if path.is_file() {
@@ -488,7 +488,7 @@ mod tests {
         dir
     }
     fn record(kind: &str, tool: &str, session: &str) -> String {
-        json!({"version": 1, "agent": "claude-code", "kind": kind, "tool": tool, "session": session, "project": "岛仔", "at": 1}).to_string()
+        json!({"version": 1, "agent": "claude-code", "kind": kind, "tool": tool, "session": session, "project": "Octopus Island", "at": 1}).to_string()
     }
 
     #[test]
@@ -496,7 +496,7 @@ mod tests {
         let event = parse(record("permission", "Bash", "s1").as_bytes()).unwrap();
         assert_eq!(
             (event.kind, event.tool.as_str(), event.project.as_str()),
-            (Kind::Permission, "Bash", "岛仔")
+            (Kind::Permission, "Bash", "Octopus Island")
         );
         // 提问与确认计划也是工具调用，但对用户来说不是「授权」。
         assert_eq!(
